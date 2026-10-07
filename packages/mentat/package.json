@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@mentat/core",
+  "version": "0.1.0",
+  "description": "Mentat two-layer private agentic coding: local gatekeeper builds sanitized mock bundles for cloud models, then reintegrates answers. Pure deterministic core (no network, no LLM calls).",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsgo --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
