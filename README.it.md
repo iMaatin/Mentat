@@ -1,3 +1,6 @@
+> [!WARNING]
+> This file still describes upstream OpenCode; it is not a Mentat guide or a Mentat translation. Use the [English Mentat README](README.md) for current Mentat documentation.
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>

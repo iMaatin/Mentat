@@ -7,7 +7,7 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "test": "bun test test/*.test.ts",
     "typecheck": "tsgo --noEmit"
   },
   "exports": {
