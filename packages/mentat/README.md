@@ -1,39 +1,34 @@
-# Mentat — two-layer private agentic coding
+# Mentat core — two-layer private agentic coding
 
-Mentat splits coding work across two layers so **your real code and data never leave your machine**:
+Mentat separates coding work into two layers:
 
-1. **Layer 1 — local gatekeeper (LM Studio, any model it serves).** Owns the real prompt, repo, and data. Builds a sanitized **mock bundle**: look-alike code (identifiers renamed, secrets redacted, structure intact) + a **small** look-alike dataset (same columns/dtypes, same joint missingness pattern, fake values).
-2. **Egress gate (deterministic, fail-closed).** Scans the exact outbound bytes for any proprietary identifier. Any hit blocks — nothing is sent anywhere.
-3. **Layer 2 — cloud worker (any vendor: OpenAI, Anthropic, Gemini, DeepSeek, …).** A tool-less subagent that only sees the mock bundle and returns a mock-space diff + notes.
-4. **Layer 1 unpacker.** Translates the answer back to real identifiers/paths, verifies no mock tokens survive, and the local agent applies + tests.
+1. **Local gatekeeper (LM Studio or another trusted local provider):** owns the real prompt, repository, and data. It creates a sanitized mock bundle with renamed identifiers, redacted secrets, and synthetic CSV values.
+2. **Fail-closed egress gate:** scans the exact outbound text against the local vault and secret patterns. A hit blocks the request.
+3. **Cloud worker:** a provider-agnostic, tool-less subagent that sees only the mock bundle and returns a mock-space diff.
+4. **Local reintegration:** maps the answer back to real identifiers and paths for human review and testing.
 
-```
-real prompt + repo + data ──▶ [Layer 1: prepare + gate] ──▶ mock bundle ──▶ [Layer 2 cloud] ──▶ mock diff ──▶ [Layer 1: reintegrate + apply]
-                                        │                                                                                  ▲
-                                        └──── vault (.mentat/, local only) ────────────────────────────────────────────────┘
-```
+The implementation details and residual risks are in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). In particular, no sanitizer can detect every unknown proprietary phrase or hide all metadata.
 
 ## Quickstart
 
-1. **LM Studio**: load any model (e.g. Qwen3 27B), start the local server (port `1234`, OpenAI-compatible).
-2. **Providers** (`opencode.json`): add the `lmstudio` custom provider and your cloud vendor(s). Snippets in [`docs/CONFIG.md`](docs/CONFIG.md).
-3. **Cloud worker model**: set `model:` in [`.opencode/agent/mentat-cloud.md`](../../.opencode/agent/mentat-cloud.md) to your cloud coder (or override via `opencode.json` → `agent`).
-4. **Policy (optional)**: copy [`mentat.example.json`](mentat.example.json) to `mentat.json` in your project and tune (column policy, budgets, denylist).
-5. In opencode: switch to your `lmstudio/*` model (`/models`), optionally switch agent to `mentat` (Tab), then:
-   - `/mentat <your task>` — full two-layer flow, or
-   - `mentat_status` — verify Layer 1 is up.
+1. Start LM Studio's OpenAI-compatible local server (default port `1234`) with a model loaded.
+2. Configure the LM Studio provider and one cloud provider in `opencode.json`; examples are in [`docs/CONFIG.md`](docs/CONFIG.md).
+3. Point the `mentat-cloud` agent at your cloud model in [`.opencode/agent/mentat-cloud.md`](../../.opencode/agent/mentat-cloud.md) or override it in `opencode.json`.
+4. In OpenCode, select your `lmstudio/*` model with `/models`, then switch to the `mentat` agent if needed.
+5. Ask the local Mentat agent to **run `mentat_status`** and report whether Layer 1 is ready; `mentat_status` is an agent tool, not a TUI command. Then run `/mentat <your task>`.
+6. Optionally copy [`mentat.example.json`](mentat.example.json) to `mentat.json` in your project and tune its column policy, budgets, and denylist.
 
-## What's where
+## Package and plugin map
 
-- `src/` — `@mentat/core`: pure deterministic core (vault, scanner, CSV profiler/synthesizer, code skeletonizer, bundle builder, reintegrator, audit, LM Studio probe). No network, no LLM calls. 37 tests.
-- `test/` — `node:test` suites + fixtures (run: `node --test test/*.test.ts` with type-stripping Node, or `bun test`).
-- `docs/THREAT_MODEL.md` — what "never leaves" covers, guarantees, and residual risks. **Read this.**
-- `docs/CONFIG.md` — LM Studio + cloud vendor setup, per-project policy.
-- `mentat.example.json` — annotated policy template.
-- Plugin wiring: [`.opencode/plugins/mentat.ts`](../../.opencode/plugins/mentat.ts) (tools `mentat_status` / `mentat_prepare` / `mentat_reintegrate` + two egress hooks).
-- Agents: [`.opencode/agent/mentat.md`](../../.opencode/agent/mentat.md) (local primary), [`mentat-cloud.md`](../../.opencode/agent/mentat-cloud.md) (cloud subagent, zero tools).
+- `src/` — `@mentat/core`: deterministic vault, leak scanner, CSV profiler/synthesizer, code skeletonizer, bundle builder, reintegrator, audit log, and LM Studio probe. Core code makes no network or LLM calls.
+- `test/` — unit tests with synthetic fixtures. Run `bun test test/*.test.ts` from this directory (or `bun run --cwd packages/mentat test` from the repository root).
+- [`docs/CONFIG.md`](docs/CONFIG.md) — local and cloud provider setup plus project policy.
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — security properties, limits, and operator checklist.
+- [`docs/BRANDING.md`](docs/BRANDING.md) — v0 naming and compatibility decision.
+- Plugin wiring: [`.opencode/plugins/mentat.ts`](../../.opencode/plugins/mentat.ts) (`mentat_status`, `mentat_prepare`, `mentat_reintegrate`, and egress hooks).
+- Agents: [`.opencode/agent/mentat.md`](../../.opencode/agent/mentat.md) (local gatekeeper) and [`.opencode/agent/mentat-cloud.md`](../../.opencode/agent/mentat-cloud.md) (tool-less cloud worker).
 - Command: [`.opencode/command/mentat.md`](../../.opencode/command/mentat.md) (`/mentat`).
 
-## The privacy boundary in one paragraph
+## Copying the plugin to another project
 
-Only three things may cross to the cloud: the sanitized task, mock code, and mock data — all scanned at three chokepoints (prepare gate, `task→mentat-cloud` hook, any-message-to-cloud hook) against the vault of known proprietary terms plus secret/entropy patterns. The vault, real files, and audit log live under `.mentat/` (gitignored). See `docs/THREAT_MODEL.md` for the honest residual risks (unknown proprietary prose, metadata like row counts, untrusted cloud output).
+Keep the complete `packages/mentat/` directory at the repository root next to `.opencode/`. The plugin's relative import expects `../../packages/mentat/src/index.js` from `.opencode/plugins/mentat.ts`; copying only the plugin file will break that import. The required layout is documented in the [top-level README](../../README.md). A live local-model plus cloud-vendor integration has not yet been verified.

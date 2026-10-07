@@ -1,6 +1,8 @@
-# Contributing to OpenCode
+# Contributing to Mentat
 
-We want to make it easy for you to contribute to OpenCode. Here are the most common type of changes that get merged:
+Mentat is an independent fork built on the OpenCode codebase. We welcome focused changes to Mentat and its runtime. For Mentat-specific behavior, tests, or documentation, use this repository's pull requests; GitHub Issues are currently disabled, so include the relevant context in your PR description. Do not imply that the upstream OpenCode team maintains or releases Mentat.
+
+Here are the most common types of changes that get merged:
 
 - Bug fixes
 - Additional LSPs / Formatters
@@ -10,14 +12,9 @@ We want to make it easy for you to contribute to OpenCode. Here are the most com
 - Missing standard behavior
 - Documentation improvements
 
-However, any UI or core product feature must go through a design review with the core team before implementation.
+However, any new Mentat UI or core product feature should be discussed with the Mentat maintainers before implementation.
 
-If you are unsure if a PR would be accepted, feel free to ask a maintainer or look for issues with any of the following labels:
-
-- [`help wanted`](https://github.com/anomalyco/opencode/issues?q=is%3Aissue%20state%3Aopen%20label%3Ahelp-wanted)
-- [`good first issue`](https://github.com/anomalyco/opencode/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22good%20first%20issue%22)
-- [`bug`](https://github.com/anomalyco/opencode/issues?q=is%3Aissue%20state%3Aopen%20label%3Abug)
-- [`perf`](https://github.com/anomalyco/opencode/issues?q=is%3Aopen%20is%3Aissue%20label%3A%22perf%22)
+If you are unsure whether a PR would be accepted, ask a maintainer or review the repository's open pull requests. The labels and issue templates can be used if GitHub Issues are enabled in the future.
 
 > [!NOTE]
 > PRs that ignore these guardrails will likely be closed.
@@ -29,7 +26,7 @@ Want to take on an issue? Leave a comment and a maintainer may assign it to you 
 New providers shouldn't require many if ANY code changes, but if you want to add support for a new provider first make a PR to:
 https://github.com/anomalyco/models.dev
 
-## Developing OpenCode
+## Developing the OpenCode runtime
 
 - Requirements: Bun 1.3+
 - Install dependencies and start the dev server from the repo root:
@@ -68,6 +65,14 @@ Then run it with:
 ```
 
 Replace `<platform>` with your platform (e.g., `darwin-arm64`, `linux-x64`).
+
+### Developing Mentat
+
+- `packages/mentat/` contains `@mentat/core`, the deterministic privacy boundary. Its tests must use synthetic fixtures; core code must not add network calls or invoke an LLM.
+- Run the core suite with `bun run --cwd packages/mentat test` (or `bun test test/*.test.ts` from `packages/mentat/`). Run its typecheck with `bun run --cwd packages/mentat typecheck`.
+- Plugin hooks and tools live in `.opencode/plugins/mentat.ts`; the local and tool-less cloud agents are in `.opencode/agent/`, and `/mentat` is defined in `.opencode/command/mentat.md`.
+- Changes to sanitization, vault mapping, mock generation, or reintegration should add regression tests for both the expected result and the fail-closed egress behavior. Never add real customer data, credentials, vaults, or `.mentat/` artifacts to tests or commits.
+- Live provider integration is a manual check requiring LM Studio and a configured cloud vendor. Keep test data synthetic, verify the model/provider routing, and inspect the generated mock bundle before involving a cloud model.
 
 - Core pieces:
   - `packages/opencode`: OpenCode core business logic & server.
@@ -177,12 +182,9 @@ With that said, you may want to try these methods, as they might work for you.
 
 ## Pull Request Expectations
 
-### Issue First Policy
+### Issue and PR context
 
-**All PRs must reference an existing issue.** Before opening a PR, open an issue describing the bug or feature. This helps maintainers triage and prevents duplicate work. PRs without a linked issue may be closed without review.
-
-- Use `Fixes #123` or `Closes #123` in your PR description to link the issue
-- For small fixes, a brief issue is fine - just enough context for maintainers to understand the problem
+GitHub Issues are currently disabled for this repository. Do not try to create an issue; explain the problem and rationale in the PR template's **Issue for this PR** section instead. The automated PR checks exempt `docs`, `refactor`, and `feat` titles from requiring a linked issue. If you are submitting a `fix`, `chore`, or `test` PR, contact a maintainer first because the current issue-link check cannot be satisfied while Issues are disabled.
 
 ### General Requirements
 
@@ -250,23 +252,8 @@ These are not strictly enforced, they are just general guidelines:
 
 ## Feature Requests
 
-For net-new functionality, start with a design conversation. Open an issue describing the problem, your proposed approach (optional), and why it belongs in OpenCode. The core team will help decide whether it should move forward; please wait for that approval instead of opening a feature PR directly.
+For net-new Mentat functionality, start with a design conversation before implementation. GitHub Issues are currently disabled, so use the repository's PR discussion or contact a maintainer to describe the problem, your proposed approach, and why it belongs in Mentat. Changes specifically to the inherited OpenCode runtime may also be proposed upstream when appropriate.
 
 ## Issue Requirements
 
-All issues **must** use one of our issue templates:
-
-- **Bug report** — for reporting bugs (requires a description)
-- **Feature request** — for suggesting enhancements (requires verification checkbox and description)
-- **Question** — for asking questions (requires the question)
-
-Blank issues are not allowed. When a new issue is opened, an automated check verifies that it follows a template and meets our contributing guidelines. If an issue doesn't meet the requirements, you'll receive a comment explaining what needs to be fixed and have **72 hours** to edit the issue. After that, it will be automatically closed.
-
-Issues may be flagged for:
-
-- Not using a template
-- Required fields left empty or filled with placeholder text
-- AI-generated walls of text
-- Missing meaningful content
-
-If you believe your issue was incorrectly flagged, let a maintainer know.
+GitHub Issues are currently disabled. If they are enabled later, use the repository's bug report, feature request, or question template and provide meaningful content instead of placeholders. Until then, use the **Issue for this PR** section of the pull-request template to explain the context (or state that Issues are disabled for a documentation-only PR).

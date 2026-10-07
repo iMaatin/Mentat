@@ -24,7 +24,7 @@
 ```
 
 Then `/models` → pick `lmstudio/local`, or set `"model": "lmstudio/local"` globally.
-Run `mentat_status` (Mentat tool) to confirm reachability + loaded models.
+Ask the local Mentat agent to run `mentat_status` (an agent tool, not a TUI command) to confirm reachability and loaded models.
 
 > Any OpenAI-compatible local server works (Ollama, llama.cpp, vLLM, MLX): add its provider ID to `localProviders` in `mentat.json` so the egress guard treats it as local.
 
@@ -63,7 +63,7 @@ Copy [`mentat.example.json`](../mentat.example.json) to `mentat.json` (project r
 
 ## 4. Sanity checklist
 
-- [ ] `mentat_status` shows LM Studio UP with your loaded model.
+- [ ] Ask the local Mentat agent to run `mentat_status`; it should show LM Studio UP with your loaded model.
 - [ ] Session model is `lmstudio/*` before real work.
 - [ ] `mentat-cloud` agent has `tools: {"*": false}` intact.
 - [ ] `.mentat/` stays untracked (`git status` clean of it).

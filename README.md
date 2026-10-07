@@ -1,129 +1,125 @@
+<h1 align="center">Mentat</h1>
+<p align="center">A two-layer, privacy-first coding workflow built on the OpenCode runtime.</p>
 <p align="center">
-  <a href="https://opencode.ai">
-    <picture>
-      <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
-      <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
-    </picture>
-  </a>
-</p>
-<p align="center">The open source AI coding agent.</p>
-<p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
+  <a href="https://github.com/iMaatin/Mentat/blob/dev/LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/iMaatin/Mentat?style=flat-square" /></a>
+  <a href="https://github.com/iMaatin/Mentat/actions/workflows/mentat-core.yml"><img alt="Mentat core tests" src="https://github.com/iMaatin/Mentat/actions/workflows/mentat-core.yml/badge.svg?branch=dev" /></a>
 </p>
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh.md">简体中文</a> |
-  <a href="README.zht.md">繁體中文</a> |
-  <a href="README.ko.md">한국어</a> |
-  <a href="README.de.md">Deutsch</a> |
-  <a href="README.es.md">Español</a> |
-  <a href="README.fr.md">Français</a> |
-  <a href="README.it.md">Italiano</a> |
-  <a href="README.da.md">Dansk</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.pl.md">Polski</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.bs.md">Bosanski</a> |
-  <a href="README.ar.md">العربية</a> |
-  <a href="README.no.md">Norsk</a> |
-  <a href="README.br.md">Português (Brasil)</a> |
-  <a href="README.th.md">ไทย</a> |
-  <a href="README.tr.md">Türkçe</a> |
-  <a href="README.uk.md">Українська</a> |
-  <a href="README.bn.md">বাংলা</a> |
-  <a href="README.gr.md">Ελληνικά</a> |
-  <a href="README.vi.md">Tiếng Việt</a>
-</p>
+> [!WARNING]
+> Mentat v0 is experimental. The local model sees your real workspace; only the sanitized mock bundle is intended for the cloud. Read the [threat model](packages/mentat/docs/THREAT_MODEL.md) before using it with sensitive material. No sanitizer can detect every unknown proprietary phrase or prevent metadata leakage.
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+Mentat keeps real code, data, identifiers, and the identifier vault on your machine. A local agent prepares a small mock workspace, a deterministic gate scans the exact cloud-bound text, and a tool-less cloud subagent works only on that mock. The local agent then maps the answer back for human review.
 
----
-
-### Installation
-
-```bash
-# YOLO
-curl -fsSL https://opencode.ai/install | bash
-
-# Package managers
-npm i -g opencode-ai@latest        # or bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS and Linux (recommended, always up to date)
-brew install opencode              # macOS and Linux (official brew formula, updated less)
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # Any OS
-nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev branch
+```text
+real code + data ──▶ local agent + sanitizer ──▶ mock bundle ──▶ tool-less cloud worker
+                         ▲                                              │
+                         └──────── local vault + reintegration ◀────────┘
 ```
 
-> [!TIP]
-> Remove versions older than 0.1.x before installing.
+## Quickstart
 
-### Desktop App (BETA)
+### 1. Get a compatible OpenCode runtime
 
-OpenCode is also available as a desktop application. Download directly from the [releases page](https://github.com/anomalyco/opencode/releases) or [opencode.ai/download](https://opencode.ai/download).
-
-| Platform              | Download                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm`, or `.AppImage`     |
+Mentat does not yet publish its own binary releases. To build the runtime in this checkout, install [Bun 1.3.14](package.json) and build from source:
 
 ```bash
-# macOS (Homebrew)
-brew install --cask opencode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/opencode-desktop
+git clone https://github.com/iMaatin/Mentat.git
+cd Mentat
+bun install
+bun run --cwd packages/opencode build
 ```
 
-#### Installation Directory
-
-The install script respects the following priority order for the installation path:
-
-1. `$OPENCODE_INSTALL_DIR` - Custom installation directory
-2. `$XDG_BIN_DIR` - XDG Base Directory Specification compliant path
-3. `$HOME/bin` - Standard user binary directory (if it exists or can be created)
-4. `$HOME/.opencode/bin` - Default fallback
+On Linux x64, the generated binary is `packages/opencode/dist/opencode-linux-x64/bin/opencode`. Use the matching `opencode-<os>-<arch>` directory for your platform, then install the local build:
 
 ```bash
-# Examples
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
+./install --binary packages/opencode/dist/opencode-linux-x64/bin/opencode
+opencode --version
 ```
 
-### Agents
+The install script puts the binary in `$HOME/bin` when that directory is usable, or `$HOME/.opencode/bin` otherwise. Set `OPENCODE_INSTALL_DIR` or `XDG_BIN_DIR` to override the destination; see [install paths](#install-paths).
 
-OpenCode includes two built-in agents you can switch between with the `Tab` key.
+**Upstream-only alternative:** without `--binary`, this repository's `install` script downloads official OpenCode releases from `anomalyco/opencode`, not Mentat fork releases. The source tree's matching runtime version is `1.18.35` (`packages/opencode/package.json`):
 
-- **build** - Default, full-access agent for development work
-- **plan** - Read-only agent for analysis and code exploration
-  - Denies file edits by default
-  - Asks permission before running bash commands
-  - Ideal for exploring unfamiliar codebases or planning changes
+```bash
+curl -fsSL https://opencode.ai/install | bash -s -- --version 1.18.35
+```
 
-Also included is a **general** subagent for complex searches and multistep tasks.
-This is used internally and can be invoked using `@general` in messages.
+This installs the upstream runtime only. Mentat's fork binaries are not published yet; `OPENCODE_REPO=iMaatin/Mentat` is not a supported installer override. Use a locally built binary with `./install --binary <path>` for this checkout.
 
-Learn more about [agents](https://opencode.ai/docs/agents).
+### 2. Start the local model
 
-### Documentation
+In LM Studio, load a model and start its OpenAI-compatible local server (default `http://127.0.0.1:1234/v1`). Verify that the endpoint lists a model:
 
-For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
+```bash
+curl http://127.0.0.1:1234/v1/models
+```
 
-### Contributing
+### 3. Configure local and cloud providers
 
-If you're interested in contributing to OpenCode, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
+Add the local LM Studio provider and your cloud provider in `opencode.json`. Select the cloud model for the `mentat-cloud` agent; configuration examples for OpenAI, Anthropic, Google, and DeepSeek are in [Mentat configuration](packages/mentat/docs/CONFIG.md).
 
-### Building on OpenCode
+### 4. Check readiness and run a task
 
-If you are working on a project that's related to OpenCode and is using "opencode" as part of its name, for example "opencode-dashboard" or "opencode-mobile", please add a note to your README to clarify that it is not built by the OpenCode team and is not affiliated with us in any way.
+Start OpenCode in a project containing Mentat's `.opencode` files. Ask the local Mentat agent to **run `mentat_status`** and report whether LM Studio is ready. `mentat_status` is an agent tool, not a TUI command. Then use:
 
----
+```text
+/mentat <your coding task>
+```
 
-**Join our community** [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode)
+The local agent gathers real context, `mentat_prepare` creates and scans the mock bundle, the cloud worker proposes a mock-space diff, and `mentat_reintegrate` maps it back. Review the result and run your tests; cloud output is not applied automatically.
+
+### 5. Set project policy (optional but recommended)
+
+Copy [`packages/mentat/mentat.example.json`](packages/mentat/mentat.example.json) to `mentat.json` at the project root or `.opencode/mentat.json`. Add project codenames, client names, and internal hosts to `denylist`; use the `alias` or `hash` column policy unless schema names are public.
+
+## Use Mentat in another project
+
+The plugin imports the core by a relative path. Preserve this layout in the target project; copying only `.opencode/` is not enough:
+
+```text
+<project>/
+├── .opencode/
+│   ├── agent/mentat.md
+│   ├── agent/mentat-cloud.md
+│   ├── command/mentat.md
+│   └── plugins/mentat.ts
+├── packages/mentat/          # the complete packages/mentat directory from this repo
+└── mentat.json               # optional project policy
+```
+
+Copy those four `.opencode` files and the complete `packages/mentat/` directory, keeping their relative paths unchanged. OpenCode installs its plugin API dependency in the config directory when loading local plugins. Then follow [configuration](packages/mentat/docs/CONFIG.md) and the Quickstart above. This layout is documented, but a live LM Studio + cloud-vendor run in a separate project has not yet been verified; see the integration caveat below.
+
+## Privacy boundary and current limits
+
+- The local model and the Mentat plugin can read the real project. The cloud subagent has no tools and should receive only the mock task, mock code, and mock data.
+- The deterministic egress gate blocks known vault terms and secret-shaped values, but cannot identify every unknown proprietary phrase. Metadata such as row counts can also be identifying; disable `data.includeRealCounts` if needed.
+- v0 profiles CSV text only. Export other data formats locally before using them, and inspect the first mock bundle for each new repository or language.
+- Reintegrated cloud output is untrusted and must be reviewed and tested locally. See the full [threat model](packages/mentat/docs/THREAT_MODEL.md).
+- The deterministic core has automated tests. A live end-to-end run with LM Studio and a real cloud vendor still needs verification in an environment with both services configured.
+
+## Install paths
+
+The [`install`](install) script chooses its destination in this order:
+
+1. `OPENCODE_INSTALL_DIR` — explicit override
+2. `XDG_BIN_DIR`
+3. `$HOME/bin` — created when possible
+4. `$HOME/.opencode/bin` — fallback
+
+Examples for a locally built binary:
+
+```bash
+OPENCODE_INSTALL_DIR="$HOME/.local/bin" ./install --binary packages/opencode/dist/opencode-linux-x64/bin/opencode
+XDG_BIN_DIR="$HOME/.local/bin" ./install --binary packages/opencode/dist/opencode-linux-x64/bin/opencode
+```
+
+## Development
+
+- [`packages/mentat/README.md`](packages/mentat/README.md) — core package and plugin map
+- [`packages/mentat/docs/CONFIG.md`](packages/mentat/docs/CONFIG.md) — LM Studio, cloud providers, and policy
+- [`packages/mentat/docs/THREAT_MODEL.md`](packages/mentat/docs/THREAT_MODEL.md) — guarantees and residual risks
+- [`packages/mentat/docs/BRANDING.md`](packages/mentat/docs/BRANDING.md) — v0 branding and compatibility decision
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development and contribution notes
+- [Mentat core CI](.github/workflows/mentat-core.yml)
+
+Mentat documentation is currently English-only; the inherited translated OpenCode READMEs were removed because they did not describe Mentat.

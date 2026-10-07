@@ -15,7 +15,7 @@ Usage: install.sh [options]
 
 Options:
     -h, --help              Display this help message
-    -v, --version <version> Install a specific version (e.g., 1.0.180)
+    -v, --version <version> Install a specific version (e.g., 1.18.35)
     -b, --binary <path>     Install from a local binary instead of downloading
         --no-modify-path    Don't modify shell config files (.zshrc, .bashrc, etc.)
 
@@ -65,8 +65,29 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-INSTALL_DIR=$HOME/.opencode/bin
-mkdir -p "$INSTALL_DIR"
+if [[ -n "${OPENCODE_REPO:-}" && -z "$binary_path" ]]; then
+    echo -e "${RED}Error: OPENCODE_REPO is not supported; downloads come from anomalyco/opencode. Use --binary with a local build.${NC}"
+    exit 1
+fi
+
+# Resolve the install destination in order: explicit override, XDG bin dir,
+# a usable ~/bin, then the OpenCode-specific fallback.
+if [[ -n "${OPENCODE_INSTALL_DIR:-}" ]]; then
+    INSTALL_DIR="$OPENCODE_INSTALL_DIR"
+elif [[ -n "${XDG_BIN_DIR:-}" ]]; then
+    INSTALL_DIR="$XDG_BIN_DIR"
+elif [[ -d "$HOME/bin" && -w "$HOME/bin" ]]; then
+    INSTALL_DIR="$HOME/bin"
+elif mkdir -p "$HOME/bin" 2>/dev/null && [[ -w "$HOME/bin" ]]; then
+    INSTALL_DIR="$HOME/bin"
+else
+    INSTALL_DIR="$HOME/.opencode/bin"
+fi
+
+if ! mkdir -p "$INSTALL_DIR"; then
+    echo -e "${RED}Error: Cannot create install directory ${INSTALL_DIR}${NC}"
+    exit 1
+fi
 
 # If --binary is provided, skip all download/detection logic
 if [ -n "$binary_path" ]; then
