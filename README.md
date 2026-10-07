@@ -122,4 +122,4 @@ XDG_BIN_DIR="$HOME/.local/bin" ./install --binary packages/opencode/dist/opencod
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development and contribution notes
 - [Mentat core CI](.github/workflows/mentat-core.yml)
 
-The translated `README.<locale>.md` files still describe upstream OpenCode and are not Mentat translations. They are retained with a warning header rather than deleted; this English README is the Mentat guide.
+Mentat documentation is currently English-only; the inherited translated OpenCode READMEs were removed because they did not describe Mentat.
