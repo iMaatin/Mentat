@@ -33,3 +33,6 @@ logs/
 *.bun-build
 tsconfig.tsbuildinfo
 /artifacts/
+
+# Mentat: local-only vaults, mock bundles, audit logs (never commit)
+.mentat/

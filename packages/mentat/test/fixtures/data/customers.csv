@@ -1,0 +1,9 @@
+customer_id,email,phone,months_since_login,plan
+1,alice@example.org,+1-555-0101,2,pro
+2,bob@example.org,,8,free
+3,,,14,free
+4,dana@example.org,+1-555-0104,1,enterprise
+5,,,9,free
+6,fred@example.org,+1-555-0106,0,pro
+7,,,21,free
+8,heidi@example.org,,5,pro

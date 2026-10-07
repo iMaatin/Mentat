@@ -1,0 +1,45 @@
+{
+  // Mentat project policy. Copy to `mentat.json` (project root) or `.opencode/mentat.json`.
+  // Safe to commit: policy only, never secrets.
+
+  // Provider IDs treated as LOCAL (may see real code/data). Anything else is
+  // treated as cloud and triggers the egress guard. Default list covers the
+  // common local servers; extend if you use others (e.g. "openrouter" is NOT local).
+  "localProviders": ["lmstudio", "ollama", "llama.cpp", "llamacpp", "local", "vllm", "mlx"],
+
+  "lmstudio": {
+    "baseUrl": "http://127.0.0.1:1234/v1",
+    "timeoutMs": 5000
+  },
+
+  // Must match `.opencode/agent/<name>.md` (the tool-less cloud subagent).
+  "cloudAgent": "mentat-cloud",
+
+  "code": {
+    "maxFiles": 12,
+    "maxLinesPerFile": 400,
+    "maxBundleTokens": 12000,
+    // String/comment handling: "keep" | "redact-secrets" | "elide".
+    // URLs/hosts/emails/private IPs normalize regardless (except "elide").
+    "strings": "redact-secrets",
+    "comments": "keep"
+  },
+
+  "data": {
+    // Column names: "keep" (faithful, leaks schema words) | "alias" (renamed,
+    // mapped back automatically — recommended) | "hash" (col_<hex>, opaque).
+    "columnPolicy": "alias",
+    "maxRows": 60,
+    "maxProfileBytes": 8388608,
+    // Include real row counts in the bundle ("real rows: 1_204_555")? Metadata
+    // only, but disable if even table sizes are sensitive.
+    "includeRealCounts": true
+  },
+
+  // Extra always-secret terms for this project (codenames, client names,
+  // internal hosts). Matched case-sensitively; keep >= 4 chars ideally.
+  "denylist": ["Project Nightingale", "acme-internal"],
+
+  // Vault secrets shorter than this are not scanned (avoids `id`-style noise).
+  "minSecretLength": 4
+}
