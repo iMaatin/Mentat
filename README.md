@@ -33,7 +33,8 @@ The build is self-contained and needs no access or permission from the upstream 
 
 - `--single` builds only the current platform, which is much faster than the default all-platform build. Drop it (or use `--baseline`) to produce the full target matrix.
 - The embedded web UI build is memory hungry: raise the Node heap (`NODE_OPTIONS=--max-old-space-size=3072 bun run --cwd packages/opencode build --single`) or pass `--skip-embed-web-ui` to skip it.
-- On networks that cannot reach `pkg.pr.new`, a preview build used only by the console, stats, and enterprise apps, install the runtime subset instead: `bun install --filter @opencode-ai/opencode --filter @opencode-ai/app`.
+- A full `bun install` also resolves `@solidjs/start` from `pkg.pr.new`, a preview build used only by the console, stats, and enterprise apps. If that host is blocked, point the `@solidjs/start` catalog entry in the root `package.json` at a released tarball (for example `https://registry.npmjs.org/@solidjs/start/-/start-2.0.6.tgz`) and re-run `bun install`; the runtime, its server, and its web UI do not use `@solidjs/start`.
+- A few dependencies (`tree-sitter-powershell`, `node-pty`) compile native bindings during install and need a C toolchain plus Node headers. The runtime reads the WebAssembly grammars those packages ship, so the compiled bindings are not required by `opencode` itself.
 
 On Linux x64, the generated binary is `packages/opencode/dist/opencode-linux-x64/bin/opencode`. Use the matching `opencode-<os>-<arch>` directory for your platform, then install the local build:
 
