@@ -26,8 +26,14 @@ Mentat does not yet publish its own binary releases. To build the runtime in thi
 git clone https://github.com/iMaatin/Mentat.git
 cd Mentat
 bun install
-bun run --cwd packages/opencode build
+bun run --cwd packages/opencode build --single
 ```
+
+The build is self-contained and needs no access or permission from the upstream OpenCode team: the terminal emulator is vendored in [`packages/app/vendor`](packages/app/vendor), the AI model catalog is snapshotted in [`packages/script/snapshot`](packages/script/snapshot), and neither the install nor the build contacts `opencode.ai`, `models.opencode.ai`, `models.dev`, or another organization's GitHub repository. Refresh the catalog with `bun run refresh:models` when you want newer model data.
+
+- `--single` builds only the current platform, which is much faster than the default all-platform build. Drop it (or use `--baseline`) to produce the full target matrix.
+- The embedded web UI build is memory hungry: raise the Node heap (`NODE_OPTIONS=--max-old-space-size=3072 bun run --cwd packages/opencode build --single`) or pass `--skip-embed-web-ui` to skip it.
+- On networks that cannot reach `pkg.pr.new`, a preview build used only by the console, stats, and enterprise apps, install the runtime subset instead: `bun install --filter @opencode-ai/opencode --filter @opencode-ai/app`.
 
 On Linux x64, the generated binary is `packages/opencode/dist/opencode-linux-x64/bin/opencode`. Use the matching `opencode-<os>-<arch>` directory for your platform, then install the local build:
 
