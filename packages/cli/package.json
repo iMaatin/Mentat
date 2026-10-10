@@ -1,0 +1,19 @@
+{
+  "name": "mentat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/src/main.js",
+  "types": "./dist/src/main.d.ts",
+  "bin": {
+    "mentat": "./dist/src/main.js"
+  },
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@mentat/core": "*",
+    "@mentat/local": "*",
+    "@mentat/cloud": "*"
+  }
+}

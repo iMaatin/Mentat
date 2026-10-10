@@ -1,0 +1,17 @@
+{
+  "name": "mentat-oc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "*"
+  }
+}

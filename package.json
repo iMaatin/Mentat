@@ -1,0 +1,28 @@
+{
+  "name": "mentat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Two-layer agentic coding platform. Nothing you own leaves your machine.",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "packages/core",
+    "packages/local",
+    "packages/cloud",
+    "packages/cli",
+    "packages/oc-plugin"
+  ],
+  "scripts": {
+    "build": "tsc --build packages/core packages/local packages/cloud packages/cli packages/oc-plugin",
+    "clean": "tsc --build --clean packages/core packages/local packages/cloud packages/cli packages/oc-plugin",
+    "test": "npm run build && node --test \"packages/*/dist/test/**/*.test.js\"",
+    "typecheck": "tsc --build packages/core packages/local packages/cloud packages/cli packages/oc-plugin --dry"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "^2.0.26",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
