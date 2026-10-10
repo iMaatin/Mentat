@@ -1,6 +1,24 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { assertLocalEndpoint, resolveLocalConfig, parseLooseJson, LocalModelError, DEFAULT_BASE_URL } from "../src/client.js";
+import { createServer } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { assertLocalEndpoint, resolveLocalConfig, parseLooseJson, LocalModelError, LocalModelUnavailable, LocalModel, DEFAULT_BASE_URL } from "../src/client.js";
+
+type HttpHandler = (req: IncomingMessage, res: ServerResponse) => void;
+
+/** Runs `fn` against a throwaway loopback server, then tears it down. */
+async function withServer(handler: HttpHandler, fn: (baseUrl: string) => Promise<void>): Promise<void> {
+  const server = createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    await fn(`http://127.0.0.1:${port}/v1`);
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
 
 describe("assertLocalEndpoint", () => {
   it("accepts loopback addresses", () => {
@@ -91,5 +109,163 @@ describe("parseLooseJson", () => {
 
   it("throws on unrecoverable output", () => {
     assert.throws(() => parseLooseJson("I cannot help with that"), LocalModelError);
+  });
+});
+
+describe("LocalModel transport hardening", () => {
+  it("refuses a redirecting endpoint instead of following it off-machine", async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(302, { location: "http://example.com/collect" });
+        res.end();
+      },
+      async (baseUrl) => {
+        const model = new LocalModel({ baseUrl, timeoutMs: 5_000 });
+        // `redirect: "error"` means the prompt and its bearer header never
+        // follow the 302 to wherever it points.
+        await assert.rejects(
+          () => model.listModels(),
+          (err: unknown) => {
+            assert.ok(err instanceof LocalModelUnavailable, `expected LocalModelUnavailable, got ${String(err)}`);
+            assert.match(err.message, /redirects are refused/);
+            return true;
+          },
+        );
+      },
+    );
+  });
+
+  it("times out while the response body is stalled", async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.write('{"data":[');
+        // Headers arrived; the body never completes. The timeout must still
+        // cover the read — clearing it when the headers landed would hang here.
+      },
+      async (baseUrl) => {
+        const model = new LocalModel({ baseUrl, timeoutMs: 400 });
+        await assert.rejects(
+          () => model.listModels(),
+          (err: unknown) => {
+            assert.ok(err instanceof LocalModelError, `expected LocalModelError, got ${String(err)}`);
+            assert.match(err.message, /timed out after 400ms/);
+            return true;
+          },
+        );
+      },
+    );
+  });
+
+  it("surfaces a string-typed endpoint error instead of an empty model list", async () => {
+    // LM Studio answers HTTP 200 with {"error":"..."} for paths it does not
+    // serve. That used to read as "server up, no models" instead of the cause.
+    await withServer(
+      (_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "Unexpected endpoint or method. (GET /models)" }));
+      },
+      async (baseUrl) => {
+        const model = new LocalModel({ baseUrl, timeoutMs: 5_000 });
+        await assert.rejects(
+          () => model.listModels(),
+          (err: unknown) => {
+            assert.ok(err instanceof LocalModelError, `expected LocalModelError, got ${String(err)}`);
+            assert.match(err.message, /Unexpected endpoint/);
+            assert.match(err.message, /ends with \/v1/);
+            return true;
+          },
+        );
+      },
+    );
+  });
+
+  it("surfaces a string-typed error from chat as a failure, not empty text", async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "Unexpected endpoint or method. (POST /chat/completions)" }));
+      },
+      async (baseUrl) => {
+        const model = new LocalModel({ baseUrl, timeoutMs: 5_000 });
+        await assert.rejects(() => model.chat([{ role: "user", content: "hi" }]), LocalModelError);
+      },
+    );
+  });
+
+  it("retries without response_format when the server rejects json_object", async () => {
+    // llama.cpp builds under LM Studio answer:
+    //   {'error': "'response_format.type' must be 'json_schema' or 'text'"}
+    // with HTTP 200. Every JSON task would fail there without this fallback.
+    let sawResponseFormat = false;
+    await withServer(
+      (req, res) => {
+        let raw = "";
+        req.on("data", (c: Buffer) => (raw += c.toString()));
+        req.on("end", () => {
+          const sent = JSON.parse(raw || "{}") as { response_format?: unknown };
+          if (sent.response_format) {
+            sawResponseFormat = true;
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "'response_format.type' must be 'json_schema' or 'text'" }));
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ choices: [{ message: { content: '{"terms":["billing"]}' } }] }));
+        });
+      },
+      async (baseUrl) => {
+        const model = new LocalModel({ baseUrl, timeoutMs: 5_000 });
+        const out = await model.chatJson<{ terms: string[] }>([{ role: "user", content: "terms?" }]);
+        assert.deepEqual(out, { terms: ["billing"] });
+        assert.equal(sawResponseFormat, true, "the first attempt should carry response_format");
+      },
+    );
+  });
+
+  it("keeps the system message first when asking for JSON", async () => {
+    // Qwen-family templates raise "System message must be at the beginning"
+    // for any system turn after position 0 — appending the JSON instruction as
+    // its own trailing system message failed every JSON task on those models.
+    let sent: { messages?: Array<{ role: string; content: string }> } = {};
+    await withServer(
+      (req, res) => {
+        let raw = "";
+        req.on("data", (c: Buffer) => (raw += c.toString()));
+        req.on("end", () => {
+          sent = JSON.parse(raw || "{}") as typeof sent;
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }));
+        });
+      },
+      async (baseUrl) => {
+        const model = new LocalModel({ baseUrl, timeoutMs: 5_000 });
+        const out = await model.chatJson<{ ok: boolean }>([
+          { role: "system", content: "You extract terms." },
+          { role: "user", content: "file body" },
+        ]);
+        assert.deepEqual(out, { ok: true });
+        const messages = sent.messages ?? [];
+        assert.deepEqual(
+          messages.map((m) => m.role),
+          ["system", "user"],
+        );
+        assert.match(messages[0]?.content ?? "", /single valid JSON value/);
+        assert.match(messages[0]?.content ?? "", /You extract terms\./);
+      },
+    );
+  });
+
+  it("parses a healthy response end to end", async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: [{ id: "qwen3-test" }] }));
+      },
+      async (baseUrl) => {
+        const model = new LocalModel({ baseUrl });
+        assert.deepEqual([...(await model.listModels())], ["qwen3-test"]);
+      },
+    );
   });
 });

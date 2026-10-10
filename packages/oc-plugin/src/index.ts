@@ -23,6 +23,47 @@ import { join, resolve } from "node:path";
 
 const run = promisify(execFile);
 
+/** A full pipeline run can take a while, but not forever. */
+const MENTAT_TIMEOUT_MS = 45 * 60_000;
+const MENTAT_MAX_BUFFER = 8 * 1024 * 1024;
+
+/**
+ * Quotes one argument for a `cmd /c` command line. Duplicated from
+ * `@mentat/cloud` on purpose: this plugin must load inside the OpenCode
+ * process without pulling in the CLI's module graph.
+ */
+function quoteForCmd(arg: string): string {
+  if (arg.length > 0 && /^[A-Za-z0-9_\-.:\\/=,@+]+$/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Runs the mentat CLI.
+ *
+ * On Windows the CLI is an npm `.cmd` shim, and spawning that directly throws
+ * EINVAL on Node >= 20.12 (the CVE-2024-27980 mitigation), so it is driven
+ * through cmd.exe with an explicitly quoted command line. Both paths carry a
+ * timeout and a bounded output buffer: `/mentat` must not be able to wedge a
+ * session by streaming forever.
+ */
+async function runMentat(binary: string, args: readonly string[], cwd: string): Promise<{ stdout: string }> {
+  const options = {
+    cwd,
+    maxBuffer: MENTAT_MAX_BUFFER,
+    windowsHide: true,
+    timeout: MENTAT_TIMEOUT_MS,
+  };
+  if (process.platform === "win32" && /\.(?:cmd|bat)$/i.test(binary)) {
+    const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe";
+    const cmdline = [binary, ...args].map(quoteForCmd).join(" ");
+    return await run(comspec, ["/d", "/s", "/c", `"${cmdline}"`], {
+      ...options,
+      windowsVerbatimArguments: true,
+    });
+  }
+  return await run(binary, [...args], options);
+}
+
 interface MentatPluginOptions {
   /** Path to the `mentat` binary. Auto-detected when omitted. */
   readonly binary?: string;
@@ -119,11 +160,7 @@ export default Plugin.define({
             text: `Starting Mentat in ${dir}. Watch the sandbox work in the terminal; inspect the result with \`mentat inspect\`.`,
           });
           try {
-            const { stdout } = await run(binary, ["ask", task, "--cwd", dir], {
-              cwd: dir,
-              maxBuffer: 32 * 1024 * 1024,
-              windowsHide: true,
-            });
+            const { stdout } = await runMentat(binary, ["ask", task, "--cwd", dir], dir);
             await ctx.session.synthetic({ sessionID, text: stdout });
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

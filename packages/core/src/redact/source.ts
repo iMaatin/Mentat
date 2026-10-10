@@ -363,7 +363,20 @@ export function sanitizeSource(
       out += tokenizeIdentifiers(seg.text, shouldTokenize, kindFor, vault);
       continue;
     }
-    if ((seg.kind === "string" && doStrings) || (seg.kind === "comment" && doComments)) {
+    if (seg.kind === "comment" && doComments) {
+      // Comments get the same identifier pass as code *before* the prose scrub.
+      // Without it, an identifier that appears only in comments is never
+      // discovered: the vault has no entry for it, so the scrub replaces
+      // nothing, the mirror keeps the real name, and the moment that name
+      // reaches an outbound payload the vault-literal scanner blocks an
+      // otherwise-clean run. Comments are safe to tokenize fully because they
+      // cannot affect the mirror's runtime behaviour, unlike string literals,
+      // which may hold real data values and are only scrubbed.
+      const tokenized = tokenizeIdentifiers(seg.text, shouldTokenize, kindFor, vault);
+      out += scrubLiteral(tokenized, language, vault, forced);
+      continue;
+    }
+    if (seg.kind === "string" && doStrings) {
       out += scrubLiteral(seg.text, language, vault, forced);
       continue;
     }

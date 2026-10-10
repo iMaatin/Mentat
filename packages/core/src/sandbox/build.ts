@@ -107,6 +107,47 @@ const DEFAULT_EXCLUDE = [
   ".mentat", ".terraform", "vendor", "Pods", ".gradle", "obj", "bin",
 ];
 
+/**
+ * Files that are never mirrored, whatever their extension.
+ *
+ * These hold live credentials in value form. The identifier tokenizer only
+ * replaces *names* it recognizes, so a `KEY=value` line such as
+ * `AWS_SECRET_ACCESS_KEY=...` would survive into the sandbox verbatim and be
+ * readable by the cloud model. Vault tokenization cannot help here: the value
+ * is not an identifier, and the file's own path becoming a token defeats the
+ * scanner's keyword fast-paths. The only safe treatment is omission, recorded
+ * in the manifest so the gap is visible rather than silent.
+ */
+const SECRET_FILE_PATTERNS: readonly RegExp[] = [
+  // .env, .env.local, .env.production — and any `*.env` variant.
+  /^\.env($|\..*)/i,
+  /\.env$/i,
+  // Key material, keystore exports, and PGP/GPG blocks.
+  /\.(?:pem|key|p12|pfx|jks|keystore|asc|gpg)$/i,
+  // SSH private keys, with or without a comment suffix (id_rsa.pub is public
+  // and harmless, but it is rare enough in repos that omitting both is fine).
+  /^id_(?:rsa|dsa|ecdsa|ed25519)(?:\.|$)/i,
+  // Package-manager and tool auth files.
+  /^(?:\.npmrc|\.netrc|\.htpasswd|\.pgpass)$/i,
+  // Cloud/credential stores. `credentials.py` is a legitimate source file and
+  // is deliberately NOT matched; only the extensionless and data forms are.
+  /^credentials?(?:\.(?:json|ya?ml|ini|conf|txt))?$/i,
+  /^\.dockerconfig\.json$/i,
+];
+
+/** Directories that exist solely to hold credentials. */
+const SECRET_DIRECTORIES = new Set([".aws", ".ssh", ".gnupg", ".pki"]);
+
+/** True when a file name marks the file as credential material. Exported for tests. */
+export function isSecretFile(name: string): boolean {
+  return SECRET_FILE_PATTERNS.some((p) => p.test(name));
+}
+
+/** True when a directory name marks it as a credential store. Exported for tests. */
+export function isSecretDirectory(name: string): boolean {
+  return SECRET_DIRECTORIES.has(name.toLowerCase());
+}
+
 const CODE_EXTENSIONS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".sql", ".go", ".rs",
   ".java", ".cs", ".sh", ".bash", ".rb", ".php", ".kt", ".swift", ".c", ".h",
@@ -114,7 +155,7 @@ const CODE_EXTENSIONS = new Set([
 ]);
 
 const CONFIG_EXTENSIONS = new Set([
-  ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf", ".env",
+  ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf",
   ".properties", ".xml", ".gradle", ".dockerfile", ".tf", ".tfvars",
 ]);
 
@@ -293,12 +334,21 @@ export async function buildSandbox(vault: Vault, options: BuildOptions): Promise
       const abs = join(dir, entry.name);
 
       if (entry.isDirectory()) {
+        // Credential stores are pruned wholesale before descending.
+        if (isSecretDirectory(entry.name)) {
+          omissions.push({ path: relPath, reason: "secret directory (never mirrored)" });
+          continue;
+        }
         // Datasets first: a directory with data files gets mocked wholesale.
         await walk(abs, relPath);
         continue;
       }
       if (!entry.isFile()) {
         omissions.push({ path: relPath, reason: "not a regular file" });
+        continue;
+      }
+      if (isSecretFile(entry.name)) {
+        omissions.push({ path: relPath, reason: "secret file (never mirrored)" });
         continue;
       }
 

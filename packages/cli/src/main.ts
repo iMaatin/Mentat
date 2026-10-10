@@ -515,8 +515,17 @@ async function cmdInspect(args: Args, projectRoot: string): Promise<number> {
     out();
     out(`${c.bold}restored patch${c.reset} ${c.dim}${paths.patch}${c.reset}`);
     const raw = await readFile(paths.patch, "utf8");
-    out(indent(raw.split("\n").slice(0, 40).join("\n"), "  "));
-    if (raw.split("\n").length > 40) out(`  ${c.dim}... truncated${c.reset}`);
+    // The file on disk is the raw sandbox diff (tokens intact — `mentat apply`
+    // restores while writing). The review surface shows it restored, which is
+    // what the label promises and what a human reviewer needs to read.
+    let shown = raw;
+    try {
+      shown = (await loadVault(paths)).restore(raw);
+    } catch {
+      // No vault (hand-edited job directory): the raw diff is still informative.
+    }
+    out(indent(shown.split("\n").slice(0, 40).join("\n"), "  "));
+    if (shown.split("\n").length > 40) out(`  ${c.dim}... truncated${c.reset}`);
   }
 
   out();

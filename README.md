@@ -1,5 +1,9 @@
 # Mentat
 
+[![CI](https://github.com/iMaatin/Mentat/actions/workflows/ci.yml/badge.svg)](https://github.com/iMaatin/Mentat/actions/workflows/ci.yml)
+[![node](https://img.shields.io/badge/node-%3E%3D20.11-brightgreen)](https://nodejs.org)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A two-layer coding agent. Your code and data never leave your machine.
 
 Mentat runs a local model first, which understands your request and your
@@ -43,20 +47,33 @@ Mentat refuses to build a sandbox anywhere inside the tree it is mirroring. From
 that working directory the real tree is not reachable at all. The guarantee is
 structural rather than a promise about what the prompt contains.
 
-## Quick start
+## Install
+
+Requirements: **Node 20.11+**, a local model in [LM Studio](https://lmstudio.ai),
+and the [`opencode`](https://opencode.ai) CLI for the cloud layer. Parquet,
+Excel, and SQLite additionally need `pip install pandas pyarrow openpyxl`; CSV,
+TSV, JSON, and JSONL need nothing.
 
 ```bash
+git clone https://github.com/iMaatin/Mentat.git
+cd Mentat
 npm install
 npm run build
 
-node packages/cli/dist/src/main.js init        # writes .mentat/config.json
-node packages/cli/dist/src/main.js doctor      # checks both layers
-node packages/cli/dist/src/main.js ask "add retry with backoff to the ingest job"
+# link the CLI onto your PATH, or call it directly:
+(cd packages/cli && npm link)     # then: mentat --help
+node packages/cli/dist/src/main.js --help
 ```
 
-Requirements: Node 20.11+, a local model in LM Studio, and `opencode` on PATH for
-the cloud layer. Parquet, Excel, and SQLite additionally need
-`pip install pandas pyarrow openpyxl`; CSV, TSV, JSON, and JSONL need nothing.
+Quick start:
+
+```bash
+mentat init      # writes .mentat/config.json and gitignores the job directory
+mentat doctor    # checks LM Studio, the opencode binary, and dataset formats
+mentat ask "add retry with backoff to the ingest job"
+```
+
+`npx mentat` works the same way once the package is published.
 
 ## Commands
 
@@ -74,6 +91,43 @@ the cloud layer. Parquet, Excel, and SQLite additionally need
 Useful flags for `ask`: `--dry-run` (build the sandbox and stop, touches no
 network), `--apply` (write the result), `--rows <n>`, `--model`, `--local`,
 `--prose`, `--no-local`, `--verbose`.
+
+## Configuration
+
+`.mentat/config.json` (JSONC — comments allowed). Everything has a working
+default; you only ever override what differs on your machine.
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `cloudModel` | `anthropic/claude-sonnet-4-5` | opencode model for layer 2, e.g. `anthropic/claude-sonnet-4-5`. |
+| `cloudAgent` | `build` | opencode agent. `build` allows edits; `plan` does not. |
+| `localModel` | `qwen3-30b-a3b` | Model name as loaded in LM Studio. |
+| `localBaseUrl` | `http://127.0.0.1:1234/v1` | LM Studio endpoint. **Must be loopback.** |
+| `mockRows` | `200` | Synthetic rows generated per mocked dataset. |
+| `seed` | `20260101` | Seed for reproducible mocks. Same input, same mock. |
+| `exclude` | `[]` | Extra names excluded from the mirror, beyond the built-in set. |
+| `dataGlobs` | `[]` | Dataset paths to always mock, even outside data directories. |
+| `sensitiveColumns` | `name`, `email`, `address`, `phone`, `ssn`, … | Columns whose values are replaced in generated data. `"*"` matches all. |
+| `verbose` | `false` | Mirror every file and stream cloud output. |
+| `autoApply` | `false` | Apply the restored patch without confirmation. |
+
+`sensitiveColumns` matches by word containment, so `email` covers
+`customer_email` and `billing_email_address`.
+
+### Environment variables
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `MENTAT_LOCAL_BASE_URL` | `http://127.0.0.1:1234/v1` | Overrides `localBaseUrl`. Must be loopback unless `MENTAT_ALLOW_REMOTE_LOCAL=1`. |
+| `MENTAT_LOCAL_MODEL` | — | Overrides `localModel`. |
+| `MENTAT_CLOUD_MODEL` | — | Overrides `cloudModel`. |
+| `MENTAT_OPENCODE_BIN` | auto-detected | Path to the opencode executable. |
+| `MENTAT_PYTHON` | `python`/`python3`/`py` | Interpreter with pandas, for parquet/xlsx/sqlite. |
+| `MENTAT_SIDECAR_TIMEOUT_MS` | `300000` | Hard ceiling per Python sidecar invocation. |
+| `MENTAT_SANDBOX_ROOT` | OS temp-adjacent default | Where sandboxes live. Never inside the repo. |
+| `MENTAT_CLOUD_EXTRA_ENV` | — | Comma-separated env var names passed through to the cloud child, in addition to the built-in allowlist. |
+| `MENTAT_ALLOW_REMOTE_LOCAL` | unset | Set to `1` to waive the loopback requirement on layer 1. Understand what that waives first. |
+| `MENTAT_DEBUG` | unset | Set to `1` for plugin/CLI debug output. |
 
 ## How the mocks are built
 
@@ -140,6 +194,12 @@ def zq_fn_fn_001(rows):
     """Compute churn against the zq_org_org_002."""
 ```
 
+Identifiers in **comments** are tokenized exactly like identifiers in code, so a
+proprietary name that only ever appears in a comment still enters the vault and
+never reaches the mirror. Comments cannot affect the mirror's runtime behaviour,
+so this is safe; string literals, which may hold real data values, are scrubbed
+but not rewritten.
+
 `dataclass`, `pandas`, `read_parquet`, `True`, and the rest of the standard and
 third-party surface survive intact. That matters more than it sounds: tokenizing
 `from dataclasses import dataclass` produces code that does not parse, and a mock
@@ -150,13 +210,22 @@ filename identifies an organization as plainly as an identifier does. Standard
 tooling names like `package.json` and `requirements.txt` are preserved, since
 renaming those breaks the build.
 
+**Secret files never enter the mirror at all.** `.env` and `.env.*`, `*.pem`,
+`*.key`, `*.p12`/`*.pfx`, `id_rsa*`, `.npmrc`, `.netrc`, `.htpasswd`,
+`credentials` (the data files, not `credentials.py`), and the `.aws/`, `.ssh/`,
+`.gnupg/` directories are omitted and recorded in the job manifest with an
+explicit reason. A `KEY=value` line is not an identifier, so tokenization could
+not protect it; omission is the only treatment that does.
+
 ## The egress gate
 
 Three checks run in order, and the third one is the only thing standing between
 a payload and the network:
 
-1. `assertNotExfiltrated` — the payload must not reference `vault.json`,
-   `prompt.txt`, or the sandbox.
+1. `assertNotExfiltrated` — the payload must not reference `.mentat/`,
+   `vault.json`, `prompt.txt`, or a `sandbox/` path. Patterns are anchored to
+   path starts, so a repository that happens to keep a real `sandbox/`
+   directory is not blocked mid-word.
 2. `assertClean` — every vault literal plus ~20 structural rules (credentials,
    private addresses, internal hosts, live emails, cards validated by Luhn).
 3. Only then is a process spawned.
@@ -166,13 +235,42 @@ passed along. Guard runs in both directions: the CLI gates the prompt, and the
 OpenCode plugin gates every outbound request in a plain session so that opening
 `opencode` directly in a Mentat project cannot quietly ship your files either.
 
+## What leaves the machine (threat model)
+
+Two things cross the network boundary, and nothing else:
+
+1. **The prompt** — your request, rewritten in de-identified terms by the local
+   model, scanned by the gate immediately before the spawn.
+2. **The sandbox tree** — the synthetic mirror, read by the cloud model through
+   opencode's tools from inside the sandbox directory.
+
+What the cloud child **does not** inherit:
+
+- **Your environment.** The child gets an allowlist, not `process.env`:
+  `PATH`, `SystemRoot`, `TEMP`/`TMP`, `HOME`/`USERPROFILE`, `APPDATA`,
+  `LANG`, and the provider API key variables opencode needs to authenticate
+  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, …). AWS keys,
+  GitHub tokens, corporate SSO material, and everything else stay here. Need a
+  variable passed through? Name it explicitly with `MENTAT_CLOUD_EXTRA_ENV`.
+- **Your filesystem.** The sandbox is outside the repository, and the
+  repository path is not reachable by walking up from it.
+- **Secret files.** They are omitted from the mirror before anything is built
+  (see above).
+
+What the cloud provider itself sees — your prompt text and the mirror — is
+covered by your agreement with that provider. Mentat's job is to make sure that
+is *all* they ever see.
+
 ## Layer 1 refuses to be remote
 
 Layer 1 is pointed at `http://127.0.0.1:1234/v1` and verified to be loopback.
 If `MENTAT_LOCAL_BASE_URL` is set to a remote address, Mentat refuses to start,
 because a remote layer 1 would upload your prompt and code *before* any
 redaction had run — defeating the entire design. Override with
-`MENTAT_ALLOW_REMOTE_LOCAL=1` only if you understand what that waives.
+`MENTAT_ALLOW_REMOTE_LOCAL=1` only if you understand what that waives. Requests
+to the endpoint also use `redirect: "error"`: a loopback server that answers
+with a 3xx is treated as unavailable rather than followed off-machine, and the
+request timeout covers the whole exchange including the body.
 
 Layer 1 does a small, specific set of things: rewrites your request in
 de-identified terms, names the proprietary identifiers in your code, and
@@ -189,6 +287,7 @@ packages/
   cloud/     opencode driver, with the egress gate in front of the spawn
   cli/       argument parsing, config, pipeline
   oc-plugin/ /mentat command and the outbound guard
+docs/        architecture, threat model, configuration reference
 .mentat/     per-job artifacts; gitignored, never leaves the machine
 ```
 
@@ -201,23 +300,6 @@ sandbox, the restored patch, and a report:
   result.patch        report.json          sandbox/
 ```
 
-## Configuration
-
-`.mentat/config.json`, JSONC. `cloudModel`, `cloudAgent`, `localModel`,
-`localBaseUrl`, `mockRows`, `seed`, `exclude`, `dataGlobs`, `sensitiveColumns`.
-
-```jsonc
-{
-  "cloudModel": "anthropic/claude-sonnet-4-5",
-  "localModel": "qwen3-30b-a3b",
-  "mockRows": 200,
-  "sensitiveColumns": ["email", "name", "phone", "address", "*_notes"]
-}
-```
-
-`sensitiveColumns` matches by word containment, so `email` covers
-`customer_email` and `billing_email_address`. Use `"*"` to match anything.
-
 ## OpenCode plugin
 
 ```jsonc
@@ -228,7 +310,50 @@ sandbox, the restored patch, and a report:
 ```
 
 Adds `/mentat <request>` and the outbound guard. It holds none of the privacy
-logic; it delegates to the CLI.
+logic; it delegates to the CLI. The guard is opt-out per project (`guard:
+false`), and extra rules can be added with `extraRules`.
+
+## Troubleshooting
+
+**LM Studio / layer 1**
+
+- `Cannot reach the local model` — is LM Studio running with its local server
+  enabled (Developer tab)? The default endpoint is `http://127.0.0.1:1234/v1`.
+- `configured localModel "..." is not loaded` — the name must match a loaded
+  model exactly; check the Models tab, or run `mentat doctor` to list what the
+  server reports. Set `MENTAT_LOCAL_MODEL` or pass `--local <name>`.
+- The refusal to fall back to a cloud model for layer 1 is deliberate. Mentat
+  will not silently send your prompt to a remote model because the local one is
+  down.
+
+**opencode / layer 2**
+
+- `Could not find the opencode CLI` — install it, or set `MENTAT_OPENCODE_BIN`
+  to its path. Mentat probes `PATH` (with `PATHEXT` on Windows, so npm's
+  `opencode.cmd` shim is found), the OpenCode desktop app install locations,
+  and the npm global prefix.
+- **Windows:** `opencode.cmd` is a batch shim, and Node ≥ 20.12 refuses to
+  spawn `.cmd` files directly (the CVE-2024-27980 mitigation). Mentat drives
+  it through `cmd.exe /d /s /c` with an explicitly quoted command line — no
+  `shell: true` anywhere. If your prompt text contains `%VAR%`-style
+  references, cmd may expand them; point `MENTAT_OPENCODE_BIN` at a real
+  executable to remove that edge entirely.
+- `Cloud run exited 1` — the reason is in the job's `report.json` under
+  `errors`. When opencode's stderr is empty, Mentat reports its `error` event
+  instead, e.g. `provider.no-route: Model unavailable: anthropic/...` — a model
+  id your opencode has no provider for. The next most common cause is
+  authentication: the provider API key (e.g. `ANTHROPIC_API_KEY`) must be
+  present in *your* environment — the cloud child receives exactly the
+  allowlisted provider variables, nothing more.
+
+**Python sidecar**
+
+- `no python with pandas` — `pip install pandas pyarrow openpyxl`, or point
+  `MENTAT_PYTHON` at an interpreter that has them. CSV/TSV/JSON/JSONL need no
+  Python at all.
+- `Python sidecar timed out` — a large or wedged read. Raise
+  `MENTAT_SIDECAR_TIMEOUT_MS`; the process is killed and the run fails closed
+  rather than hanging.
 
 ## Known limits
 
@@ -242,14 +367,23 @@ logic; it delegates to the CLI.
 - The structural scanner cannot see a proprietary term it has never been shown.
   That is why the local model's term extraction is a real stage rather than an
   optimization.
+- Comments are tokenized aggressively (same rules as code), so a distinctive
+  English word in a comment may become a token. The round trip restores it
+  exactly.
 
 ## Development
 
 ```bash
 npm run build
-npm test        # 106 tests
+npm test        # 148 tests
 ```
 
 Tests cover the vault round trip, token-prefix collisions, scanner false
-positives, mock fidelity against known statistics, sandbox leakage, path
-traversal, and the egress gate's ordering.
+positives, mock fidelity against known statistics, sandbox leakage, secret-file
+omission, path traversal, sidecar timeouts and stdin guards, the env allowlist,
+Windows command-line quoting, redirect refusal, stalled-body timeouts, comment
+tokenization round trips, and the egress gate's ordering.
+
+## License
+
+[MIT](LICENSE) © iMatin

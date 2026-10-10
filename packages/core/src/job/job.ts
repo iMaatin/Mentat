@@ -17,7 +17,7 @@
  */
 
 import { mkdir, readFile, writeFile, readdir, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { Vault, type VaultEntry } from "../vault/Vault.js";
 import type { ScanReport } from "../scan/scan.js";
 
@@ -126,19 +126,38 @@ export async function listJobs(jobRoot: string): Promise<string[]> {
 }
 
 export async function removeJob(jobRoot: string, id: string): Promise<void> {
-  const paths = jobPaths(jobRoot, id);
-  if (!resolve(paths.root).startsWith(resolve(jobRoot))) {
+  const root = resolve(jobRoot);
+  const target = resolve(join(root, id));
+  // Containment by `relative`, not by prefix. A `startsWith` test passes for a
+  // sibling directory whose name extends the root's own name —
+  // `…/.mentat/jobs-evil` starts with `…/.mentat/jobs` — which let
+  // `mentat clean ../jobs-evil` delete outside the job root. A relative path
+  // that escapes the root, or addresses the root itself, is refused.
+  const rel = relative(root, target);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error("refusing to delete outside the job root");
   }
-  await rm(paths.root, { recursive: true, force: true });
+  await rm(target, { recursive: true, force: true });
 }
 
 /**
- * Files that must never appear in an outbound payload. Checked by the egress
+ * Paths that must never appear in an outbound payload. Checked by the egress
  * layer in addition to content scanning, so that a mistake in path handling
  * fails closed.
+ *
+ * Patterns are anchored to path starts rather than matched as raw substrings.
+ * The raw substring "sandbox/" fired on any repository that happens to keep a
+ * real `sandbox/` directory — a very common project layout — so every `ask`
+ * that mentioned a file under it was blocked. The anchored form still matches
+ * the path at a segment boundary (start of payload, after whitespace, a quote,
+ * or a path separator) while leaving `mysandbox/…` and `my.sandbox/…` alone.
  */
-export const FORBIDDEN_OUTBOUND = [".mentat/", "vault.json", "prompt.txt", "sandbox/"] as const;
+export const FORBIDDEN_OUTBOUND: readonly RegExp[] = [
+  /(?:^|[^A-Za-z0-9_.\-])\.mentat[\\/]/,
+  /(?:^|[^A-Za-z0-9_\-])vault\.json/,
+  /(?:^|[^A-Za-z0-9_\-])prompt\.txt/,
+  /(?:^|[^A-Za-z0-9_.\-])sandbox[\\/]/,
+];
 
 export class BoundaryViolation extends Error {
   readonly offending: string;
@@ -155,6 +174,7 @@ export class BoundaryViolation extends Error {
 /** Fails closed when a payload names anything that stays local. */
 export function assertNotExfiltrated(payload: string): void {
   for (const forbidden of FORBIDDEN_OUTBOUND) {
-    if (payload.includes(forbidden)) throw new BoundaryViolation(forbidden);
+    const match = forbidden.exec(payload);
+    if (match) throw new BoundaryViolation(match[0].trim());
   }
 }

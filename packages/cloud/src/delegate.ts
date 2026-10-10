@@ -14,7 +14,8 @@
 
 import { spawn, spawnSync, type SpawnOptions } from "node:child_process";
 import { access, constants } from "node:fs/promises";
-import { delimiter, join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { delimiter, extname, join } from "node:path";
 import { Vault, assertClean, assertNotExfiltrated, LeakDetected, type ScanReport } from "@mentat/core";
 
 export interface CloudConfig {
@@ -61,6 +62,9 @@ export interface CloudEvent {
   readonly [key: string]: unknown;
 }
 
+/** Per-stream ceiling on captured child output, for the report and the parser. */
+export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
+
 export class EgressBlocked extends Error {
   readonly report: ScanReport;
   constructor(report: ScanReport) {
@@ -76,19 +80,99 @@ export class EgressBlocked extends Error {
 }
 
 const CANDIDATES_WINDOWS = [
-  "opencode",
   join(process.env.LOCALAPPDATA ?? "", "Programs", "@opencodedesktop", "resources", "opencode-cli.exe"),
   join(process.env.LOCALAPPDATA ?? "", "Programs", "opencode", "opencode.exe"),
   join(process.env.APPDATA ?? "", "npm", "opencode.cmd"),
-  join(process.env.APPDATA ?? "", "npm", "opencode.ps1"),
 ];
 
 const CANDIDATES_POSIX = [
-  "opencode",
   "/usr/local/bin/opencode",
   "/usr/bin/opencode",
   join(process.env.HOME ?? "", ".opencode", "bin", "opencode"),
 ];
+
+function isWindows(): boolean {
+  return process.platform === "win32";
+}
+
+function pathExtList(env: NodeJS.ProcessEnv): string[] {
+  const raw = env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
+  return raw.split(";").filter((e) => e.length > 0);
+}
+
+/**
+ * Resolves one candidate file name, appending PATHEXT extensions on Windows.
+ *
+ * A bare `opencode` on PATH is usually an npm shim: a file actually named
+ * `opencode.cmd`. Extension-less probing finds nothing, which is half of why
+ * `opencode: command not found` happens on Windows even when the CLI works in
+ * a terminal.
+ */
+function resolveWithExtensions(base: string, env: NodeJS.ProcessEnv): string | null {
+  if (!isWindows()) return existsSync(base) ? base : null;
+  try {
+    if (existsSync(base) && statSync(base).isFile()) return base;
+  } catch {
+    /* fall through to extension search */
+  }
+  for (const ext of pathExtList(env)) {
+    const candidate = base + ext;
+    try {
+      if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolves a command to an absolute path via PATH and PATHEXT.
+ *
+ * Written by hand rather than relying on the shell because there must be no
+ * shell anywhere on this path: the whole point is to control exactly which
+ * bytes reach the spawned process.
+ */
+export function resolveCommand(cmd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (!cmd) return null;
+  if (/[\\/]/.test(cmd)) return resolveWithExtensions(cmd, env);
+  const dirs = (env.PATH ?? "").split(isWindows() ? ";" : ":").filter(Boolean);
+  for (const dir of dirs) {
+    const found = resolveWithExtensions(join(dir, cmd), env);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** True for the batch shims npm installs on Windows. */
+export function isBatchFile(bin: string): boolean {
+  return /\.(?:cmd|bat)$/i.test(bin);
+}
+
+function comspec(env: NodeJS.ProcessEnv = process.env): string {
+  return env.ComSpec ?? env.COMSPEC ?? "cmd.exe";
+}
+
+/**
+ * Quotes one argument for a `cmd /c` command line.
+ *
+ * Arguments made of path-safe characters pass through bare; everything else is
+ * double-quoted with embedded quotes backslash-escaped, which is what the
+ * target of an npm `.cmd` shim (a Node script) expects. cmd's own parser does
+ * not treat `%` as escapable inside quotes, so a prompt containing an existing
+ * environment-variable reference such as `%PATH%` would be expanded by cmd;
+ * that is a documented limitation of the batch shim, and setting
+ * `MENTAT_OPENCODE_BIN` to a real executable removes it entirely.
+ */
+export function quoteForCmd(arg: string): string {
+  if (arg.length > 0 && /^[A-Za-z0-9_\-.:\\/=,@+]+$/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '\\"')}"`;
+}
+
+/** Full `cmd /c` command line for `bin` with `args`, each part quoted as needed. */
+export function buildWindowsCommandLine(bin: string, args: readonly string[]): string {
+  return [bin, ...args].map(quoteForCmd).join(" ");
+}
 
 /**
  * Locates the opencode binary.
@@ -97,41 +181,52 @@ const CANDIDATES_POSIX = [
  * common source of "opencode: command not found" even though the user has the
  * app installed. Probing the known install locations saves that confusion.
  */
-export function findOpenCode(): string | null {
-  const explicit = process.env.MENTAT_OPENCODE_BIN;
-  if (explicit) return explicit;
+export function findOpenCode(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit = env.MENTAT_OPENCODE_BIN;
+  if (explicit) return resolveWithExtensions(explicit, env) ?? explicit;
 
-  const isWindows = process.platform === "win32";
-  const candidates = isWindows ? CANDIDATES_WINDOWS : CANDIDATES_POSIX;
-  const pathEntries = (process.env.PATH ?? "").split(isWindows ? ";" : ":").filter(Boolean);
+  const candidates = isWindows() ? CANDIDATES_WINDOWS : CANDIDATES_POSIX;
 
-  for (const dir of pathEntries) {
-    for (const name of isWindows ? ["opencode.cmd", "opencode.exe", "opencode"] : ["opencode"]) {
-      const full = join(dir, name);
-      if (probeBinary(full)) return full;
-    }
-  }
+  const fromPath = resolveCommand("opencode", env);
+  if (fromPath) return fromPath;
   for (const candidate of candidates) {
     if (!candidate) continue;
-    if (probeBinary(candidate)) return candidate;
+    const resolved = resolveWithExtensions(candidate, env);
+    if (resolved) return resolved;
   }
   return null;
 }
 
 function probeBinary(candidate: string): boolean {
   if (!candidate) return false;
-  const r = spawnSync(candidate, ["--version"], {
-    stdio: "ignore",
-    timeout: 15_000,
-    windowsHide: true,
-    shell: false,
-  });
-  return r.status === 0;
+  try {
+    if (isWindows() && isBatchFile(candidate)) {
+      // Spawning a `.cmd` directly with `shell: false` throws EINVAL on Node
+      // >= 18.20/20.12/22 (the CVE-2024-27980 mitigation), so the shim must be
+      // driven through cmd.exe explicitly.
+      const r = spawnSync(comspec(), ["/d", "/s", "/c", `"${buildWindowsCommandLine(candidate, ["--version"])}"`], {
+        stdio: "ignore",
+        timeout: 15_000,
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+      });
+      return !r.error && r.status === 0;
+    }
+    const r = spawnSync(candidate, ["--version"], {
+      stdio: "ignore",
+      timeout: 15_000,
+      windowsHide: true,
+      shell: false,
+    });
+    return !r.error && r.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 export async function requireOpenCode(config: CloudConfig): Promise<string> {
-  const explicit = config.binary ?? findOpenCode();
-  if (!explicit) {
+  const found = config.binary ? (resolveCommand(config.binary) ?? config.binary) : findOpenCode();
+  if (!found) {
     throw new Error(
       "Could not find the opencode CLI.\n" +
         "  Install it, or set MENTAT_OPENCODE_BIN to its path.\n" +
@@ -139,12 +234,81 @@ export async function requireOpenCode(config: CloudConfig): Promise<string> {
     );
   }
   try {
-    await access(explicit, constants.X_OK);
+    await access(found, constants.X_OK);
   } catch {
     // Windows relies on PATHEXT rather than the executable bit.
-    if (process.platform !== "win32") throw new Error(`opencode at ${explicit} is not executable.`);
+    if (process.platform !== "win32") throw new Error(`opencode at ${found} is not executable.`);
   }
-  return explicit;
+  return found;
+}
+
+// ---------------------------------------------------------------------------
+// Environment passed to the cloud child
+// ---------------------------------------------------------------------------
+
+/**
+ * The minimum an agent process needs to start: locate its own binaries, write
+ * temp files, and find the user's home directory.
+ */
+const BASE_ENV_ALLOWLIST = [
+  "PATH", "PATHEXT", "COMSPEC", "SystemRoot", "SYSTEMROOT", "WINDIR",
+  "TEMP", "TMP",
+  "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+  "APPDATA", "LOCALAPPDATA",
+  "LANG", "LC_ALL", "TZ",
+];
+
+/**
+ * Provider credentials the cloud layer needs to authenticate.
+ *
+ * Passing nothing breaks layer 2 outright — opencode has no key to present —
+ * so the choice is not "secrets or no secrets" but *which* secrets. These
+ * variables are exactly the provider API keys opencode reads, and nothing
+ * else: the agent inside the sandbox never sees AWS keys, GitHub tokens, or
+ * corporate SSO material that happen to sit in the developer's environment.
+ * `MENTAT_CLOUD_EXTRA_ENV` names additional variables explicitly, one per
+ * comma/semicolon separator, for providers not listed here.
+ */
+const PROVIDER_ENV_ALLOWLIST = [
+  "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+  "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_ORGANIZATION",
+  "OPENROUTER_API_KEY", "GROQ_API_KEY", "DEEPSEEK_API_KEY", "XAI_API_KEY",
+  "MISTRAL_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "COHERE_API_KEY",
+  "TOGETHER_API_KEY", "FIREWORKS_API_KEY", "PERPLEXITY_API_KEY",
+  "MOONSHOT_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+];
+
+/**
+ * Builds the child's environment from an allowlist.
+ *
+ * The previous implementation forwarded `...process.env` wholesale, which
+ * handed the cloud agent — a process with a shell inside the sandbox — every
+ * secret in the developer's environment. `env` inside the sandbox prints them
+ * all, and they leave with the next tool call. An allowlist is the only shape
+ * that matches the threat model: everything not explicitly needed stays here.
+ */
+export function buildChildEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  const wanted = new Set([...BASE_ENV_ALLOWLIST, ...PROVIDER_ENV_ALLOWLIST]);
+  // Case-insensitive match on Windows: the same variable may surface as
+  // `SystemRoot` or `SYSTEMROOT` depending on how the process was started.
+  const lower = new Map([...wanted].map((k) => [k.toLowerCase(), k]));
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    const canonical = lower.get(key.toLowerCase());
+    if (canonical) out[canonical] = value;
+  }
+  for (const extra of (env.MENTAT_CLOUD_EXTRA_ENV ?? "").split(/[,;]/)) {
+    const name = extra.trim();
+    if (name.length === 0) continue;
+    const value = env[name];
+    if (value !== undefined) out[name] = value;
+  }
+  // Keep the sandbox session from reaching anything network-bound beyond the
+  // model provider itself, and keep output parseable.
+  out.MENTAT_SANDBOX = "1";
+  out.NO_COLOR = "1";
+  return out;
 }
 
 /** Builds the instruction the cloud model receives. */
@@ -218,20 +382,28 @@ export async function delegate(options: DelegateOptions): Promise<DelegateResult
   const spawnOptions: SpawnOptions = {
     cwd: options.sandboxRoot,
     windowsHide: true,
-    env: {
-      ...process.env,
-      // Keep the sandbox session from reaching anything network-bound beyond
-      // the model provider itself.
-      MENTAT_SANDBOX: "1",
-      NO_COLOR: "1",
-    },
+    env: buildChildEnv(),
     stdio: ["ignore", "pipe", "pipe"],
   };
 
   return await new Promise<DelegateResult>((resolvePromise) => {
-    const child = spawn(bin, args, spawnOptions);
+    // A `.cmd` shim cannot be spawned directly on Node >= 20.12: the
+    // CVE-2024-27980 mitigation makes that EINVAL. Drive it through cmd.exe
+    // with an explicitly quoted command line instead of reaching for
+    // `shell: true`, which would re-inject the shell this code otherwise
+    // avoids entirely.
+    const useComspec = isWindows() && isBatchFile(bin);
+    const child = useComspec
+      ? spawn(
+          comspec(),
+          ["/d", "/s", "/c", `"${buildWindowsCommandLine(bin, args)}"`],
+          { ...spawnOptions, windowsVerbatimArguments: true },
+        )
+      : spawn(bin, args, spawnOptions);
     let stdout = "";
     let stderr = "";
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let settled = false;
 
     const timer = setTimeout(() => {
@@ -239,14 +411,23 @@ export async function delegate(options: DelegateOptions): Promise<DelegateResult
       child.kill();
     }, options.config.timeoutMs ?? 1_800_000);
 
+    // A runaway agent can emit far past what the report should carry. Cap the
+    // in-memory copy; the streams are drained either way, so the child never
+    // blocks on a full pipe.
+    const append = (current: string, text: string, truncated: boolean): [string, boolean] => {
+      if (truncated) return [current, true];
+      const next = current.length < MAX_CAPTURE_BYTES ? current + text : current;
+      return [next, next.length >= MAX_CAPTURE_BYTES];
+    };
+
     child.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
-      stdout += text;
+      [stdout, stdoutTruncated] = append(stdout, text, stdoutTruncated);
       if (options.verbose) process.stdout.write(text);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
-      stderr += text;
+      [stderr, stderrTruncated] = append(stderr, text, stderrTruncated);
       if (options.verbose) process.stderr.write(text);
     });
 
@@ -270,6 +451,8 @@ export async function delegate(options: DelegateOptions): Promise<DelegateResult
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (stdoutTruncated) stdout += `\n[mentat] stdout truncated at ${MAX_CAPTURE_BYTES} bytes\n`;
+      if (stderrTruncated) stderr += `\n[mentat] stderr truncated at ${MAX_CAPTURE_BYTES} bytes\n`;
       const events = parseNdjson(stdout);
       resolvePromise({
         ok: code === 0,
@@ -323,6 +506,31 @@ export function finalText(events: readonly CloudEvent[]): string | null {
     if (typeof text === "string" && text.trim().length > 0) best = text;
   }
   return best;
+}
+
+/**
+ * The best one-line explanation for a failed cloud run.
+ *
+ * opencode in `--format json` reports failures as an `error` event on stdout —
+ * `{"type":"error","error":{"type":"provider.no-route","message":"…"}}` — and
+ * its stderr stays empty, so surfacing stderr alone produced the useless
+ * "Cloud run exited 1: ". Preference order: stderr when it has content, the
+ * first error event, then the tail of stdout.
+ */
+export function failureSummary(result: Pick<DelegateResult, "events" | "stderr" | "stdout">): string {
+  const stderr = result.stderr.trim();
+  if (stderr.length > 0) return stderr.slice(0, 800);
+  for (const event of result.events) {
+    if (event.type !== "error") continue;
+    const error = event.error;
+    if (typeof error === "string") return error.slice(0, 800);
+    if (typeof error === "object" && error !== null) {
+      const { type, message } = error as { type?: unknown; message?: unknown };
+      const parts = [typeof type === "string" ? type : "", typeof message === "string" ? message : ""].filter(Boolean);
+      if (parts.length > 0) return parts.join(": ").slice(0, 800);
+    }
+  }
+  return result.stdout.trim().slice(-800);
 }
 
 /**

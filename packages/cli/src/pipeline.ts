@@ -50,7 +50,7 @@ import {
   type TableProfile,
 } from "@mentat/core";
 import { LocalModel, extractTerms, redactProse, rewritePrompt, describeDataset } from "@mentat/local";
-import { delegate, finalText } from "@mentat/cloud";
+import { delegate, finalText, failureSummary } from "@mentat/cloud";
 import type { MentatConfig } from "./config.js";
 
 export interface RunOptions {
@@ -132,6 +132,7 @@ export async function runPipeline(options: RunOptions): Promise<RunOutcome> {
 
   // ---------------------------------------------------------------- stage 1
   log("inventing the repository");
+  await warnIfMentatNotIgnored(projectRoot, log);
   const local = options.skipLocalModel ? null : new LocalModel({ model: options.config.localModel, baseUrl: options.config.localBaseUrl });
 
   if (local) {
@@ -298,8 +299,18 @@ export async function runPipeline(options: RunOptions): Promise<RunOutcome> {
   }
 
   // The sanitized prompt is what is sent; record it beside the original so the
-  // two can be diffed later.
-  assertNotExfiltrated(task);
+  // two can be diffed later. A BoundaryViolation here must land in the report
+  // before it propagates, so the run is inspectable after the fact.
+  try {
+    assertNotExfiltrated(task);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    errors.push(message);
+    report.status = "failed";
+    report.finishedAt = new Date().toISOString();
+    await saveReport(paths, report);
+    return { jobId, report, sandboxManifest: manifest, datasets: datasetMocks, cloudReply: null, blocked: message };
+  }
   await writeFile(paths.promptSanitized, task, "utf8");
 
   const promptPreview = scan(task, vault, { redact: true });
@@ -314,14 +325,28 @@ export async function runPipeline(options: RunOptions): Promise<RunOutcome> {
   }
 
   log("delegating to the cloud layer");
-  const delegation = await delegate({
-    sandboxRoot,
-    prompt: task,
-    vault,
-    config: { model: options.config.cloudModel, agent: options.config.cloudAgent, standalone: false },
-    logger: log,
-    verbose: options.config.verbose,
-  });
+  let delegation: Awaited<ReturnType<typeof delegate>>;
+  try {
+    delegation = await delegate({
+      sandboxRoot,
+      prompt: task,
+      vault,
+      config: { model: options.config.cloudModel, agent: options.config.cloudAgent, standalone: false },
+      logger: log,
+      verbose: options.config.verbose,
+    });
+  } catch (err) {
+    // `delegate` reports gate failures as values, but anything it does not
+    // anticipate — a missing binary, a malformed config — arrives as a throw.
+    // The job must still be recorded as failed, or `mentat list` shows a job
+    // that never finished and `inspect` has no report to show.
+    const message = err instanceof Error ? err.message : String(err);
+    errors.push(`Cloud delegation failed: ${message}`);
+    report.status = "failed";
+    report.finishedAt = new Date().toISOString();
+    await saveReport(paths, report);
+    return { jobId, report, sandboxManifest: manifest, datasets: datasetMocks, cloudReply: null, blocked: message };
+  }
   report.egress = delegation.egress;
 
   if (delegation.blocked) {
@@ -335,7 +360,9 @@ export async function runPipeline(options: RunOptions): Promise<RunOutcome> {
   if (!delegation.ok) {
     report.status = "failed";
     report.finishedAt = new Date().toISOString();
-    errors.push(`Cloud run exited ${delegation.exitCode}: ${delegation.stderr.slice(0, 800)}`);
+    // stderr is often empty: opencode reports failures as an error event on
+    // stdout in --format json mode. failureSummary prefers whichever has content.
+    errors.push(`Cloud run exited ${delegation.exitCode}: ${failureSummary(delegation)}`);
     await saveReport(paths, report);
     return { jobId, report, sandboxManifest: manifest, datasets: datasetMocks, cloudReply: finalText(delegation.events), blocked: null };
   }
@@ -369,6 +396,33 @@ export async function runPipeline(options: RunOptions): Promise<RunOutcome> {
   await saveReport(paths, report);
 
   return { jobId, report, sandboxManifest: manifest, datasets: datasetMocks, cloudReply: reply, blocked: null };
+}
+
+/**
+ * Warns when `.mentat/` is not covered by the project's `.gitignore`.
+ *
+ * Without `mentat init`, nothing stops a later `git add -A` from committing
+ * `vault.json` — the file that maps every identifier in the repository to its
+ * real name, i.e. the exact inverse of the privacy guarantee. A warning is the
+ * honest response: the run itself is safe, the repository is one commit away
+ * from not being.
+ */
+async function warnIfMentatNotIgnored(projectRoot: string, log: (message: string) => void): Promise<void> {
+  const covered = (line: string): boolean => {
+    const entry = line.trim().replace(/^!/, "").replace(/^\//, "").replace(/\/+$/, "");
+    return entry === ".mentat" || entry === "**/.mentat" || entry === "**/.mentat/*";
+  };
+  try {
+    const gitignore = await readFile(join(projectRoot, ".gitignore"), "utf8");
+    if (gitignore.split(/\r?\n/).some(covered)) return;
+  } catch {
+    // No .gitignore at all: the warning applies just the same.
+  }
+  log(
+    "  warning: .mentat/ is not git-ignored. Job artifacts include vault.json, " +
+      "which maps every identifier in this repository back to its real name. " +
+      "Run `mentat init` before committing.",
+  );
 }
 
 function diffStat(raw: string): { files: number; insertions: number; deletions: number } {

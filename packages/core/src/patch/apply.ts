@@ -319,11 +319,24 @@ export function git(cwd: string, args: readonly string[], timeoutMs = 120_000): 
     const child = spawn("git", [...args], { cwd, windowsHide: true });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    // The timer must be cleared on every exit path. A pending 120 s timer per
+    // git call keeps the event loop alive after the command has finished, so
+    // the CLI would linger for up to two minutes after its work was done.
+    const finish = (result: { code: number; stdout: string; stderr: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish({ code: -1, stdout, stderr: `${stderr}\n[mentat] git ${args[0] ?? ""} timed out after ${timeoutMs}ms` });
+    }, timeoutMs);
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-    child.on("error", (err) => resolvePromise({ code: -1, stdout, stderr: String(err) }));
-    child.on("close", (code) => resolvePromise({ code: code ?? -1, stdout, stderr }));
-    setTimeout(() => child.kill(), timeoutMs);
+    child.on("error", (err) => finish({ code: -1, stdout, stderr: String(err) }));
+    child.on("close", (code) => finish({ code: code ?? -1, stdout, stderr }));
   });
 }
 

@@ -106,6 +106,34 @@ export function resolveLocalConfig(overrides: LocalClientOptions = {}): Required
   };
 }
 
+/**
+ * Extracts an endpoint-level error body into a message, or null when absent.
+ *
+ * Two shapes are real in the wild: OpenAI's `{error: {message}}` and LM
+ * Studio's bare `{error: "..."}`, which it returns with HTTP 200 for any path
+ * it does not serve — most often a `localBaseUrl` missing its `/v1` suffix.
+ * Read naively that body parses fine and yields an empty response list, so the
+ * misconfiguration surfaces as "server is up but reports no models" instead of
+ * the actual reason.
+ */
+function endpointErrorMessage(raw: unknown): string | null {
+  if (raw == null) return null;
+  let message: string;
+  if (typeof raw === "string") {
+    message = raw;
+  } else if (typeof raw === "object") {
+    const nested = (raw as { message?: unknown }).message;
+    message = typeof nested === "string" && nested.length > 0 ? nested : JSON.stringify(raw);
+  } else {
+    message = String(raw);
+  }
+  if (message.trim().length === 0) return null;
+  if (/unexpected endpoint|not found|unknown (?:path|endpoint|route)/i.test(message)) {
+    message += "\nHint: the OpenAI-compatible API lives under /v1 — check that localBaseUrl ends with /v1.";
+  }
+  return message;
+}
+
 interface ChatResponse {
   choices?: Array<{ message?: { content?: string | null }; finish_reason?: string | null }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -130,7 +158,10 @@ export class LocalModel {
   /** Lists loaded models. Used by `mentat doctor`. */
   async listModels(): Promise<readonly string[]> {
     const res = await this.request("/models", { method: "GET" });
-    const parsed = (await res.json()) as { data?: Array<{ id?: string }> };
+    if (!res.ok) throw new LocalModelError(`Local model endpoint returned HTTP ${res.status} for /models.`);
+    const parsed = parseJsonLoose<{ data?: Array<{ id?: string }>; error?: unknown }>(res.text);
+    const endpointError = endpointErrorMessage(parsed.error);
+    if (endpointError) throw new LocalModelError(endpointError);
     return (parsed.data ?? []).map((m) => m.id ?? "").filter((id) => id.length > 0);
   }
 
@@ -158,12 +189,20 @@ export class LocalModel {
     if (options.stop) body.stop = [...options.stop];
     if (options.json) body.response_format = { type: "json_object" };
 
-    const res = await this.request("/chat/completions", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    const parsed = (await res.json()) as ChatResponse;
-    if (parsed.error?.message) throw new LocalModelError(parsed.error.message);
+    let parsed = await this.sendChat(body);
+    let endpointError = endpointErrorMessage(parsed.error);
+    // Some llama.cpp builds (the server under LM Studio) reject `json_object`
+    // outright: "'response_format.type' must be 'json_schema' or 'text'".
+    // Every JSON task — term extraction, prompt rewrite, dataset naming —
+    // would then fail on that server. The system prompt already demands a bare
+    // JSON value and the parser tolerates chatter, so dropping the structural
+    // hint is a fallback, not a degradation.
+    if (endpointError !== null && options.json && /response_format/i.test(endpointError)) {
+      delete body.response_format;
+      parsed = await this.sendChat(body);
+      endpointError = endpointErrorMessage(parsed.error);
+    }
+    if (endpointError !== null) throw new LocalModelError(endpointError);
 
     const choice = parsed.choices?.[0];
     const text = choice?.message?.content ?? "";
@@ -176,45 +215,85 @@ export class LocalModel {
     };
   }
 
+  /** Sends one chat request and parses the body. Does not interpret errors. */
+  private async sendChat(body: Record<string, unknown>): Promise<ChatResponse> {
+    const res = await this.request("/chat/completions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseJsonLoose<ChatResponse>(res.text);
+  }
+
   /** Asks for JSON and parses it, tolerating fenced code blocks. */
   async chatJson<T>(messages: readonly LocalMessage[], options: { temperature?: number; maxTokens?: number } = {}): Promise<T> {
-    const completion = await this.chat(
-      [
-        ...messages,
-        {
-          role: "system",
-          content:
-            "Respond with a single valid JSON value and nothing else. No prose, no explanation, " +
-            "no markdown code fences. Your entire reply must parse with JSON.parse.",
-        },
-      ],
-      { ...options, json: true },
-    );
+    const instruction =
+      "Respond with a single valid JSON value and nothing else. No prose, no explanation, " +
+      "no markdown code fences. Your entire reply must parse with JSON.parse.";
+    // The instruction rides on the existing leading system message instead of
+    // being appended as a second system turn. Qwen-family chat templates raise
+    // "System message must be at the beginning" for any system message after
+    // position 0, which would fail every JSON task (term extraction, prompt
+    // rewrite, dataset naming) on those models.
+    const [first] = messages;
+    const merged: LocalMessage[] =
+      first && first.role === "system"
+        ? [{ role: "system", content: `${first.content}\n\n${instruction}` }, ...messages.slice(1)]
+        : [{ role: "system", content: instruction }, ...messages];
+    const completion = await this.chat(merged, { ...options, json: true });
     return parseLooseJson<T>(completion.text);
   }
 
-  private async request(pathname: string, init: { method: string; body?: string }): Promise<Response> {
+  private async request(
+    pathname: string,
+    init: { method: string; body?: string },
+  ): Promise<{ ok: boolean; status: number; text: string }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
     try {
-      return await fetch(`${this.config.baseUrl}${pathname}`, {
+      const res = await fetch(`${this.config.baseUrl}${pathname}`, {
         method: init.method,
         headers: {
           "content-type": "application/json",
           authorization: `Bearer ${this.config.apiKey}`,
         },
         body: init.body,
+        // A loopback endpoint that redirects would silently send the prompt —
+        // and the bearer header — off-machine. Refuse redirects outright; the
+        // only acceptable layer-1 server answers directly.
+        redirect: "error",
         signal: controller.signal,
       });
+      // The body is read here, while the timeout is still armed. Returning the
+      // Response instead would clear the timer before the caller consumed the
+      // stream, leaving a stalled body to hang forever.
+      const text = await res.text();
+      return { ok: res.ok, status: res.status, text };
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
       if (err instanceof Error && err.name === "AbortError") {
         throw new LocalModelError(`Local model timed out after ${this.config.timeoutMs}ms. Is a model loaded in LM Studio?`);
       }
-      throw new LocalModelUnavailable(this.config.baseUrl, detail);
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new LocalModelUnavailable(
+        this.config.baseUrl,
+        `${detail} (note: redirects are refused; a 3xx answer from the endpoint is treated as unavailable)`,
+      );
     } finally {
       clearTimeout(timer);
     }
+  }
+}
+
+/**
+ * Parses a response body, turning a malformed payload into a `LocalModelError`
+ * with a bounded excerpt instead of a raw SyntaxError. LM Studio answers with
+ * HTML on several failure paths (proxy pages, error handlers), and a bare parse
+ * crash there would obscure which layer actually failed.
+ */
+function parseJsonLoose<T>(text: string): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new LocalModelError(`Local model returned a non-JSON response. First 200 chars:\n${text.slice(0, 200)}`);
   }
 }
 

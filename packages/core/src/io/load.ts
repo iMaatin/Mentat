@@ -299,8 +299,29 @@ export function pythonExecutable(): string | null {
 
 /** Verifies the interpreter exists *and* already has pandas installed. */
 function probePython(exe: string): boolean {
-  const r = spawnSync(exe, ["-c", "import pandas"], { stdio: "ignore", timeout: 15_000 });
-  return r.status === 0;
+  try {
+    if (process.platform === "win32" && /\.(?:cmd|bat)$/i.test(exe)) {
+      // A `.cmd` shim cannot be probed directly on Node >= 20.12: the
+      // CVE-2024-27980 mitigation makes that EINVAL. Drive it through
+      // cmd.exe instead of silently reporting "no python with pandas".
+      const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe";
+      // The `/c` payload is wrapped in an outer quote pair: with `/s`, cmd
+      // strips the first and last quote it sees, and without the outer pair it
+      // would strip the quotes around the executable path instead.
+      const cmdline = `"${exe}" -c "import pandas"`;
+      const r = spawnSync(comspec, ["/d", "/s", "/c", `"${cmdline}"`], {
+        stdio: "ignore",
+        timeout: 15_000,
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+      });
+      return !r.error && r.status === 0;
+    }
+    const r = spawnSync(exe, ["-c", "import pandas"], { stdio: "ignore", timeout: 15_000 });
+    return !r.error && r.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 export class PythonUnavailable extends Error {
@@ -347,6 +368,21 @@ export function pythonAvailable(): boolean {
   return pythonExecutable() !== null;
 }
 
+/**
+ * Hard ceiling on a sidecar invocation.
+ *
+ * Without it, a hung interpreter (a file lock, a prompt, a wedged driver)
+ * hangs the whole pipeline: every later stage waits on a process that will
+ * never emit its JSON. The limit is generous because a large workbook read
+ * through openpyxl is genuinely slow; anything approaching it is a hang.
+ */
+const SIDECAR_TIMEOUT_DEFAULT_MS = 300_000;
+
+function sidecarTimeoutMs(): number {
+  const fromEnv = Number(process.env.MENTAT_SIDECAR_TIMEOUT_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : SIDECAR_TIMEOUT_DEFAULT_MS;
+}
+
 async function runPython(req: PythonRequest): Promise<string> {
   const exe = pythonExecutable();
   if (!exe) throw new PythonUnavailable(req.format as DatasetFormat);
@@ -354,14 +390,56 @@ async function runPython(req: PythonRequest): Promise<string> {
   if (!existsSync(script)) {
     throw new Error(`Mentat Python sidecar not found at ${script}. Reinstall the package.`);
   }
+  const timeoutMs = sidecarTimeoutMs();
   return await new Promise<string>((resolvePromise, rejectPromise) => {
-    const child = spawn(exe, [script], { stdio: ["pipe", "pipe", "pipe"] });
+    // Same EINVAL rule as every other `.cmd` on this codebase: a batch shim is
+    // driven through cmd.exe with a quoted command line, never spawned directly.
+    const isBatch = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(exe);
+    const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe";
+    // Outer quote pair required: `cmd /s` strips the first and last quote of
+    // the /c payload, so the executable's own quotes only survive inside it.
+    const inner = `"${exe}" "${script}"`;
+    const child = isBatch
+      ? spawn(comspec, ["/d", "/s", "/c", `"${inner}"`], {
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          windowsVerbatimArguments: true,
+        })
+      : spawn(exe, [script], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      rejectPromise(
+        new Error(
+          `Python sidecar timed out after ${timeoutMs}ms reading ${req.path}.\n` +
+            `Set MENTAT_SIDECAR_TIMEOUT_MS to raise the limit for very large files.`,
+        ),
+      );
+    }, timeoutMs);
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-    child.on("error", (err) => rejectPromise(new PythonUnavailable(req.format as DatasetFormat)));
+    // The sidecar may exit before reading its request. The resulting EPIPE on
+    // stdin surfaces as a stream "error" event, and an unhandled stream error
+    // crashes the process; the close handler below already reports the failure.
+    child.stdin.on("error", () => {});
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectPromise(
+        err instanceof Error && err.message.includes("ENOENT")
+          ? new PythonUnavailable(req.format as DatasetFormat)
+          : new Error(`Python sidecar could not start: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (code !== 0) {
         rejectPromise(new Error(`Python sidecar failed (exit ${code}):\n${stderr.trim() || stdout.trim()}`));
         return;
