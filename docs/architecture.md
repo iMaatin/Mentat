@@ -67,16 +67,30 @@ created — without depending on its history.
 
 ## Stage 3 — delegate
 
-`cloud/delegate.ts` runs the gates **in order**, and the spawn is last:
+The rewritten prompt first gets a **deterministic `vault.sanitize` pass**
+(`pipeline.ts`), then `cloud/delegate.ts` runs the gates **in order**, and the
+spawn is last:
 
 1. `assertNotExfiltrated` — the payload must not reference `.mentat/`,
    `vault.json`, `prompt.txt`, or a `sandbox/` path. Patterns are anchored to
-   path boundaries.
+   path boundaries. Never overridable.
 2. `assertClean` — every vault literal plus ~20 structural rules (credentials,
-   private addresses, internal hosts, live emails, Luhn-validated cards). Any
-   finding aborts; it is never logged and passed along.
+   private addresses, internal hosts, live emails, Luhn-validated cards). A
+   finding normally aborts; it is never logged and passed along. The one
+   exception is a human-approved override — the CLI surfaces the findings (rule,
+   severity, count, excerpt) and an interactive `[y/N]` (or `--allow-egress`)
+   lets the operator proceed to layer 2 anyway. The findings and
+   `egressApproved: true` are recorded on the run; without a TTY and without the
+   flag, the gate stays fail-closed.
 3. Only now is a process spawned: `opencode run` headless, with the sandbox as
    its working directory.
+
+The fixed instruction block `delegate` prepends is sanitized against the vault
+too, because aggressive comment tokenization can mint an entry that collides
+with an ordinary instruction word ("directory") and would otherwise block an
+otherwise-clean run. The task itself is deliberately left raw, so an upstream
+that skipped its own sanitize is still caught by Gate 2 rather than silently
+repaired.
 
 The child process receives an **allowlisted environment** (see
 [threat-model.md](threat-model.md)), a 4 MiB capture cap per stream, and a

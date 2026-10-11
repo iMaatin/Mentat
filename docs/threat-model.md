@@ -82,6 +82,17 @@ A finding aborts the run. It is never reduced to a log line. The same
 deterministic rules run in the OpenCode plugin as an outbound guard, so opening
 `opencode` directly in a Mentat project is covered too.
 
+Gate 2 (the content scan) makes one exception, and only for Gate 2: when the
+scan finds something, the CLI shows the findings — rule, severity, count, a
+masked excerpt — and offers the operator an explicit `[y/N]` override (or
+`--allow-egress` for non-interactive use). This exists because the vault is
+sometimes deliberately incomplete and a handful of acceptable leaks are a
+real-world case. The decision is recorded, not laundered: the findings stay on
+the run and `report.json` is stamped `egressApproved: true` beside them. Without
+a TTY and without `--allow-egress`, the run stays fail-closed. Gate 1
+(`assertNotExfiltrated`) has no override at all — a reference to the vault or
+the job directory is always a bug.
+
 ## Layer 1 is pinned to loopback
 
 A remote layer 1 would upload your prompt and code *before* any redaction ran,

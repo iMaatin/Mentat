@@ -50,6 +50,8 @@ export interface JobReport {
   datasetsMocked: { realPath: string; rows: number; sourceRows: number }[];
   tokensIntroduced: number;
   egress: ScanReport | null;
+  /** Set when the user reviewed the egress findings and approved sending. */
+  egressApproved?: boolean;
   diffStat: { files: number; insertions: number; deletions: number };
   errors: string[];
 }

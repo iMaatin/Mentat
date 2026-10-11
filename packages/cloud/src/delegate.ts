@@ -39,6 +39,18 @@ export interface DelegateOptions {
   readonly logger?: (message: string) => void;
   /** Stream the model's output to the terminal. */
   readonly verbose?: boolean;
+  /**
+   * The caller already showed the user the Gate 2 findings and they approved
+   * sending anyway. Gate 2 then records the findings instead of blocking.
+   * Gate 1 (local-only artifact references) ignores this entirely.
+   */
+  readonly allowFindings?: boolean;
+  /**
+   * Called when Gate 2 finds something and `allowFindings` is not set. The
+   * callback receives the exact report the gate saw; return true to send
+   * anyway. Declining — or never being called — leaves the run blocked.
+   */
+  readonly reviewEgress?: (report: ScanReport) => Promise<boolean>;
 }
 
 export interface DelegateResult {
@@ -55,6 +67,8 @@ export interface DelegateResult {
   readonly durationMs: number;
   /** Set when the run was blocked before any process started. */
   readonly blocked?: string;
+  /** True when findings were sent with an explicit human approval. */
+  readonly egressApproved?: boolean;
 }
 
 export interface CloudEvent {
@@ -311,15 +325,34 @@ export function buildChildEnv(env: NodeJS.ProcessEnv = process.env): Record<stri
   return out;
 }
 
-/** Builds the instruction the cloud model receives. */
-export function buildPrompt(task: string, context?: string): string {
-  const base =
-    "You are working inside a synthetic mirror of a real codebase. The identifiers beginning " +
-    "with `zq_` are the real identifiers in this project: use them exactly as written, and do " +
-    "not attempt to guess or expand what they stand for. Infer intent from how they are used.\n\n" +
-    "Make the requested change by editing the files in this directory. Run the tests if they " +
-    "exist and fix what you break. Do not describe the change instead of making it.\n";
-  return context ? `${base}\nAdditional context:\n${context}\n\nTask:\n${task}` : `${base}\nTask:\n${task}`;
+/**
+ * The fixed instruction block the cloud model always receives.
+ *
+ * It is prose we wrote, but it is English — and aggressive comment
+ * tokenization can mint a vault entry that collides with one of its words
+ * (e.g. "directory"). A raw collision would block every run of a project
+ * whose vault happens to contain it, so the block is sanitized against the
+ * vault when one is supplied.
+ */
+export const PROMPT_INSTRUCTIONS =
+  "You are working inside a synthetic mirror of a real codebase. The identifiers beginning " +
+  "with `zq_` are the real identifiers in this project: use them exactly as written, and do " +
+  "not attempt to guess or expand what they stand for. Infer intent from how they are used.\n\n" +
+  "Make the requested change by editing the files in this directory. Run the tests if they " +
+  "exist and fix what you break. Do not describe the change instead of making it.\n";
+
+/**
+ * Builds the instruction the cloud model receives.
+ *
+ * When a vault is supplied, the instruction block and context are sanitized
+ * (real identifiers → tokens). The task is deliberately NOT sanitized here:
+ * an unsanitized task reaching this point is an upstream bug, and Gate 2
+ * must catch it rather than silently repair it.
+ */
+export function buildPrompt(task: string, context?: string, vault?: Vault): string {
+  const base = vault ? vault.sanitize(PROMPT_INSTRUCTIONS) : PROMPT_INSTRUCTIONS;
+  const extra = vault && context ? vault.sanitize(context) : context;
+  return extra ? `${base}\nAdditional context:\n${extra}\n\nTask:\n${task}` : `${base}\nTask:\n${task}`;
 }
 
 /**
@@ -333,7 +366,9 @@ export function buildPrompt(task: string, context?: string): string {
 export async function delegate(options: DelegateOptions): Promise<DelegateResult> {
   const log = options.logger ?? (() => {});
   const started = Date.now();
-  const prompt = buildPrompt(options.prompt);
+  // Sanitizes the instruction block (see buildPrompt); the task passes through
+  // so Gate 2 below still catches an upstream that skipped its own sanitize.
+  const prompt = buildPrompt(options.prompt, undefined, options.vault);
   const payloadBytes = Buffer.byteLength(prompt, "utf8");
 
   // --- Gate 1: local-only artifact references -------------------------------
@@ -356,24 +391,39 @@ export async function delegate(options: DelegateOptions): Promise<DelegateResult
 
   // --- Gate 2: content scan -------------------------------------------------
   let egress: ScanReport;
+  let egressApproved = false;
   try {
     egress = assertClean(prompt, options.vault, { redact: true });
   } catch (err) {
     const scanReport: ScanReport = err instanceof LeakDetected ? err.report : { ok: false, findings: [], rulesRun: [] };
-    return {
-      ok: false,
-      exitCode: -1,
-      events: [],
-      stdout: "",
-      stderr: err instanceof Error ? err.message : String(err),
-      egress: scanReport,
-      payloadBytes,
-      durationMs: Date.now() - started,
-      blocked: err instanceof Error ? err.message : String(err),
-    };
+    // A human decision, not a retry: the reviewer sees exactly what the gate
+    // saw — rule, severity, count, excerpt — and either accepts the leak or
+    // leaves the run blocked. Gate 1 above never routes through here.
+    egressApproved =
+      options.allowFindings === true || (await options.reviewEgress?.(scanReport)) === true;
+    if (!egressApproved) {
+      return {
+        ok: false,
+        exitCode: -1,
+        events: [],
+        stdout: "",
+        stderr: err instanceof Error ? err.message : String(err),
+        egress: scanReport,
+        payloadBytes,
+        durationMs: Date.now() - started,
+        blocked: err instanceof Error ? err.message : String(err),
+      };
+    }
+    egress = scanReport;
   }
 
-  log(`  egress clear (${payloadBytes} bytes, ${egress.rulesRun.length} rules)`);
+  if (egress.ok) {
+    log(`  egress clear (${payloadBytes} bytes, ${egress.rulesRun.length} rules)`);
+  } else {
+    // The findings travel with the run: report.json keeps them, marked as
+    // approved, so the decision is auditable after the fact.
+    log(`  egress approved (${payloadBytes} bytes, ${egress.findings.length} finding(s) accepted)`);
+  }
 
   // --- Gate 3: only now may we contact the cloud ----------------------------
   const bin = await requireOpenCode(options.config);
@@ -444,6 +494,7 @@ export async function delegate(options: DelegateOptions): Promise<DelegateResult
         egress,
         payloadBytes,
         durationMs: Date.now() - started,
+        egressApproved: egressApproved || undefined,
       });
     });
 
@@ -463,6 +514,7 @@ export async function delegate(options: DelegateOptions): Promise<DelegateResult
         egress,
         payloadBytes,
         durationMs: Date.now() - started,
+        egressApproved: egressApproved || undefined,
       });
     });
   });

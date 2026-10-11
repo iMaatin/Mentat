@@ -11,9 +11,9 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join, resolve, relative, sep } from "node:path";
 import process from "node:process";
+import { createInterface } from "node:readline";
 import {
   applyDiff,
-  formatReport,
   jobPaths,
   listJobs,
   loadVault,
@@ -29,6 +29,7 @@ import {
   formatFor,
   supportsFormat,
   type JobReport,
+  type ScanReport,
 } from "@mentat/core";
 import { LocalModel } from "@mentat/local";
 import { findOpenCode } from "@mentat/cloud";
@@ -41,6 +42,13 @@ interface Args {
   readonly flags: Readonly<Record<string, string | boolean>>;
 }
 
+/**
+ * Flags whose value is the next argument. Only these consume a following
+ * token — a boolean flag placed before the request (`ask --allow-egress "fix
+ * the bug"`) must not swallow it.
+ */
+const VALUE_FLAGS = new Set(["cwd", "rows", "model", "local", "context"]);
+
 function parseArgs(argv: readonly string[]): Args {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
@@ -52,12 +60,13 @@ function parseArgs(argv: readonly string[]): Args {
       if (eq !== -1) {
         flags[arg.slice(2, eq)] = arg.slice(eq + 1);
       } else {
+        const name = arg.slice(2);
         const next = argv[i + 1];
-        if (next !== undefined && !next.startsWith("--")) {
-          flags[arg.slice(2)] = next;
+        if (VALUE_FLAGS.has(name) && next !== undefined && !next.startsWith("--")) {
+          flags[name] = next;
           i += 1;
         } else {
-          flags[arg.slice(2)] = true;
+          flags[name] = true;
         }
       }
     } else if (arg.startsWith("-") && arg.length === 2) {
@@ -99,6 +108,75 @@ function fail(msg: string): void {
   process.stderr.write(`${c.red}✗${c.reset} ${msg}\n`);
 }
 
+/** Severity → color. Critical and high are both "stop and look"; low is context. */
+function severityColor(severity: string): string {
+  switch (severity) {
+    case "critical":
+      return c.red + c.bold;
+    case "high":
+      return c.red;
+    case "medium":
+      return c.yellow;
+    default:
+      return c.dim;
+  }
+}
+
+/** Status → color, shared by ask, list, and inspect. */
+function paintStatus(status: string): string {
+  const trimmed = status.trimEnd();
+  if (trimmed === "failed") return c.red + status + c.reset;
+  if (trimmed === "returned" || trimmed === "applied") return c.green + status + c.reset;
+  return c.dim + status + c.reset;
+}
+
+/** A findings block: severity, rule, count, masked excerpt, advice. */
+function renderFindings(report: ScanReport): string {
+  return report.findings
+    .map((f) =>
+      [
+        `  ${severityColor(f.severity)}${f.severity}${c.reset} ${c.bold}${f.rule}${c.reset} x${f.count}`,
+        `      ${c.dim}${f.excerpt}${c.reset}`,
+        `      ${c.dim}${f.advice}${c.reset}`,
+      ].join("\n"),
+    )
+    .join("\n");
+}
+
+function confirm(question: string): Promise<boolean> {
+  return new Promise<boolean>((resolveAnswer) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolveAnswer(/^(y|yes)$/i.test(answer.trim()));
+    });
+  });
+}
+
+/**
+ * The egress review shown when a scan finds something in the outbound payload.
+ * The user sees exactly what the gate saw — rule, severity, count, masked
+ * excerpt — and decides. Non-interactive runs stay fail-closed unless
+ * --allow-egress was given; either way the findings land in report.json.
+ */
+function makeEgressReviewer(autoApprove: boolean): (report: ScanReport) => Promise<boolean> {
+  return async (report) => {
+    out();
+    warn(`egress review — the outbound payload contains ${report.findings.length} finding(s):`);
+    out(renderFindings(report));
+    out();
+    if (autoApprove) {
+      warn("sending anyway: --allow-egress was given (findings are recorded in report.json)");
+      return true;
+    }
+    if (process.stdin.isTTY !== true) {
+      out(`  ${c.dim}Not interactive. Re-run with --allow-egress to send these findings anyway.${c.reset}`);
+      return false;
+    }
+    return await confirm(`  ${c.bold}Send to the cloud model anyway?${c.reset} [y/N] `);
+  };
+}
+
 const HELP = `${c.bold}mentat${c.reset} — a two-layer coding agent that keeps your code on your machine.
 
 ${c.bold}USAGE${c.reset}
@@ -124,6 +202,9 @@ ${c.bold}OPTIONS for ask${c.reset}
   --prose                Also rewrite comments and docs via the local model.
   --no-local             Skip local model calls entirely (deterministic only).
   --context "<text>"     Extra context passed to the local rewriter.
+  --allow-egress         Send even when the egress scan finds sensitive
+                         content. Findings are shown for review and recorded.
+                         Never applies to local-artifact references.
   --verbose              Stream cloud output and mirror every file.
 
 ${c.bold}ENVIRONMENT${c.reset}
@@ -137,8 +218,8 @@ ${c.bold}ENVIRONMENT${c.reset}
 ${c.bold}HOW IT STAYS PRIVATE${c.reset}
   Your repository is never sent. Mentat builds a synthetic mirror outside your
   project, the cloud model edits only that mirror, and the result is mapped back
-  by token substitution. Every outbound payload is scanned and the run aborts if
-  anything real survives.`;
+  by token substitution. Every outbound payload is scanned; anything real
+  blocks the run unless you review the findings and approve them yourself.`;
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
@@ -201,8 +282,9 @@ async function cmdAsk(args: Args, projectRoot: string): Promise<number> {
   const root = jobsRoot(projectRoot);
 
   out();
-  step("Mentat will send only a synthetic mirror to the cloud model.");
-  step(`cloud ${config.cloudModel}   local ${config.localModel} (LM Studio)`);
+  out(`${c.bold}mentat${c.reset} ${c.dim}— sends only a synthetic mirror to the cloud${c.reset}`);
+  out(`  ${c.dim}cloud${c.reset}  ${config.cloudModel}`);
+  out(`  ${c.dim}local${c.reset}  ${config.localModel} ${c.dim}(LM Studio)${c.reset}`);
   out();
 
   const outcome = await runPipeline({
@@ -216,6 +298,7 @@ async function cmdAsk(args: Args, projectRoot: string): Promise<number> {
     apply: config.autoApply,
     rewriteProse: args.flags.prose === true,
     skipLocalModel: args.flags["no-local"] === true,
+    reviewEgress: makeEgressReviewer(args.flags["allow-egress"] === true),
     logger: (m) => {
       if (m.startsWith("  ")) out(`  ${c.dim}${m.trim()}${c.reset}`);
       else step(m);
@@ -224,9 +307,28 @@ async function cmdAsk(args: Args, projectRoot: string): Promise<number> {
 
   out();
   const r = outcome.report;
-  out(`${c.bold}job${c.reset} ${outcome.jobId}`);
+  const line = (label: string, value: string): void => out(`${c.bold}${label.padEnd(8)}${c.reset} ${value}`);
+  const egress = !r.egress
+    ? c.dim + "not run" + c.reset
+    : r.egress.ok
+      ? c.green + "clean" + c.reset
+      : r.egressApproved
+        ? c.yellow + "APPROVED" + c.reset + c.dim + ` (${r.egress.findings.length} finding(s) reviewed)` + c.reset
+        : c.red + "BLOCKED" + c.reset + c.dim + ` (${r.egress.findings.length} finding(s))` + c.reset;
+
+  line("job", outcome.jobId);
+  line("status", paintStatus(r.status));
+  line("egress", egress);
+  if (r.diffStat.files > 0) {
+    line("changes", `${r.diffStat.files} file(s), +${r.diffStat.insertions} -${r.diffStat.deletions}`);
+    if (!config.autoApply) {
+      out(`  ${c.dim}not applied — review: mentat inspect ${outcome.jobId}${c.reset}`);
+      out(`  ${c.dim}apply:   mentat apply ${outcome.jobId} --yes${c.reset}`);
+    }
+  }
 
   if (outcome.datasets.length > 0) {
+    out();
     out(`${c.bold}datasets${c.reset}`);
     for (const d of outcome.datasets) {
       const misses = d.fidelity.filter((f) => !f.ok);
@@ -235,20 +337,12 @@ async function cmdAsk(args: Args, projectRoot: string): Promise<number> {
     }
   }
 
-  if (r.egress) {
-    out(`${c.bold}egress${c.reset} ${r.egress.ok ? c.green + "clean" + c.reset : c.red + "BLOCKED" + c.reset}`);
-    if (!r.egress.ok) out(formatReport(r.egress).replace(/^/gm, "  "));
-  }
-
-  if (r.diffStat.files > 0) {
-    out(
-      `${c.bold}changes${c.reset} ${r.diffStat.files} file(s), ` +
-        `+${r.diffStat.insertions} -${r.diffStat.deletions}`,
-    );
-    if (!config.autoApply) {
-      out(`  ${c.dim}not applied. Review with: mentat inspect ${outcome.jobId}${c.reset}`);
-      out(`  ${c.dim}apply with:    mentat ask --apply ... (or re-run apply)${c.reset}`);
-    }
+  // On the blocked path the findings are printed here; on the approved path
+  // the review already showed them, so the summary does not repeat them.
+  if (r.egress && !r.egress.ok && !r.egressApproved) {
+    out();
+    out(`${c.red}egress findings${c.reset}`);
+    out(renderFindings(r.egress));
   }
 
   if (outcome.cloudReply) {
@@ -461,11 +555,10 @@ async function cmdInspect(args: Args, projectRoot: string): Promise<number> {
       out("No jobs recorded yet.");
       return 0;
     }
-    out("Jobs:");
+    out(`${c.bold}jobs${c.reset}`);
     for (const j of jobs) {
       const report = await loadReport(jobPaths(root, j));
-      const status = report?.status ?? "unknown";
-      out(`  ${j}  ${c.dim}${status}${c.reset}`);
+      out(`  ${j}  ${paintStatus((report?.status ?? "unknown").padEnd(9))}`);
     }
     return 0;
   }
@@ -478,7 +571,7 @@ async function cmdInspect(args: Args, projectRoot: string): Promise<number> {
   }
 
   out(`${c.bold}job${c.reset} ${report.id}`);
-  out(`  status      ${report.status}`);
+  out(`  status      ${paintStatus(report.status)}`);
   out(`  started     ${report.startedAt}`);
   out(`  finished    ${report.finishedAt ?? "-"}`);
   out(`  cloud       ${report.cloudModel}`);
@@ -489,8 +582,13 @@ async function cmdInspect(args: Args, projectRoot: string): Promise<number> {
 
   if (report.egress) {
     out();
-    out(`${c.bold}egress${c.reset}`);
-    out(`  ${formatReport(report.egress).replace(/^/gm, "  ")}`);
+    const verdict = report.egress.ok
+      ? c.green + "clean" + c.reset
+      : report.egressApproved
+        ? c.yellow + "APPROVED" + c.reset + c.dim + " — findings reviewed and accepted by a human" + c.reset
+        : c.red + "BLOCKED" + c.reset + c.dim + ` — ${report.egress.findings.length} finding(s)` + c.reset;
+    out(`${c.bold}egress${c.reset}    ${verdict}`);
+    if (!report.egress.ok) out(renderFindings(report.egress));
   }
 
   if (report.datasetsMocked.length > 0) {
@@ -625,13 +723,11 @@ async function cmdList(projectRoot: string): Promise<number> {
     out("No jobs recorded yet.");
     return 0;
   }
-  out("Jobs:");
+  out(`${c.bold}jobs${c.reset}`);
   for (const j of jobs) {
     const report = await loadReport(jobPaths(root, j));
-    out(
-      `  ${j}  ${c.dim}${report?.status ?? "?"}` +
-        `${report ? `  ${report.diffStat.files} files` : ""}${c.reset}`,
-    );
+    const status = (report?.status ?? "?").padEnd(9);
+    out(`  ${j}  ${paintStatus(status)}${report ? `  ${report.diffStat.files} file(s)` : ""}`);
   }
   return 0;
 }
@@ -676,7 +772,12 @@ async function cmdScan(args: Args, projectRoot: string): Promise<number> {
   const vault = await loadVault(jobPaths(root, jobs[0] as string));
   const text = await readFile(path, "utf8");
   const report = scan(text, vault, { redact: true });
-  out(formatReport(report));
+  if (report.ok) {
+    out(`${c.green}✓${c.reset} clean — ${report.rulesRun.length} rules, 0 findings`);
+  } else {
+    out(`${c.red}✗${c.reset} ${report.findings.length} finding(s) in ${target}`);
+    out(renderFindings(report));
+  }
   return report.ok ? 0 : 1;
 }
 

@@ -90,7 +90,8 @@ mentat ask "add retry with backoff to the ingest job"
 
 Useful flags for `ask`: `--dry-run` (build the sandbox and stop, touches no
 network), `--apply` (write the result), `--rows <n>`, `--model`, `--local`,
-`--prose`, `--no-local`, `--verbose`.
+`--prose`, `--no-local`, `--verbose`, `--allow-egress` (approve egress findings
+without an interactive prompt — see [The egress gate](#the-egress-gate)).
 
 ## Configuration
 
@@ -230,10 +231,41 @@ a payload and the network:
    private addresses, internal hosts, live emails, cards validated by Luhn).
 3. Only then is a process spawned.
 
-Both checks **fail closed**. A finding aborts the run; it is never logged and
-passed along. Guard runs in both directions: the CLI gates the prompt, and the
-OpenCode plugin gates every outbound request in a plain session so that opening
-`opencode` directly in a Mentat project cannot quietly ship your files either.
+Before either gate, the rewritten prompt gets one **deterministic
+`vault.sanitize` pass**. The local rewriter has no vault, so a real identifier it
+echoed back would otherwise survive into the payload and trip Gate 2; replacing
+every known real with its token here is what makes the common case pass cleanly.
+
+Both gates **fail closed**. A finding aborts the run; it is never logged and
+passed along. Gate 1 (local-only artifact references) is never overridable.
+
+### Reviewing an egress finding
+
+Gate 2 (the content scan) treats a finding as a **human decision, not a hard
+stop**. When the scan finds something in the outbound payload, Mentat prints
+exactly what it saw — rule, severity, count, and a masked excerpt — and asks:
+
+```
+! 1 finding(s) in the outbound payload — refusing to send unless you approve.
+  critical  vault-literal x3
+      …zq_billing… ledger → real name present…
+      A real identifier survived tokenization; fix extraction before sending.
+
+  Send anyway? [y/N]
+```
+
+- Interactive runs prompt `[y/N]`. Non-interactive runs (scripts, the plugin)
+  stay fail-closed unless `--allow-egress` is passed.
+- Approving is **not** laundering: the findings are kept, and `report.json`
+  records `egressApproved: true` beside them, so the decision is auditable. If
+  you judge only a handful of tokens leak and the risk is acceptable, this is
+  the way to proceed to layer 2.
+- Gate 1 still cannot be approved around. A reference to `vault.json` or the job
+  directory is always a bug, never a judgement call.
+
+Guard runs in both directions: the CLI gates the prompt, and the OpenCode plugin
+gates every outbound request in a plain session so that opening `opencode`
+directly in a Mentat project cannot quietly ship your files either.
 
 ## What leaves the machine (threat model)
 
@@ -375,14 +407,18 @@ false`), and extra rules can be added with `extraRules`.
 
 ```bash
 npm run build
-npm test        # 148 tests
+npm test        # 156 tests
 ```
 
 Tests cover the vault round trip, token-prefix collisions, scanner false
 positives, mock fidelity against known statistics, sandbox leakage, secret-file
 omission, path traversal, sidecar timeouts and stdin guards, the env allowlist,
 Windows command-line quoting, redirect refusal, stalled-body timeouts, comment
-tokenization round trips, and the egress gate's ordering.
+tokenization round trips, and the egress gate's ordering. The egress review
+flow has its own coverage: instruction-block sanitization against the vault, the
+task left raw for Gate 2, the review callback's approve/decline/`allowFindings`
+paths, Gate 1 never routed through review, and a stage-3 regression test proving
+a known vault literal in the request is tokenized before the outbound scan.
 
 ## License
 

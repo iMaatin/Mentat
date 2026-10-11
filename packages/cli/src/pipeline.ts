@@ -47,6 +47,7 @@ import {
   type DatasetMockEntry,
   type JobReport,
   type SandboxManifest,
+  type ScanReport,
   type TableProfile,
 } from "@mentat/core";
 import { LocalModel, extractTerms, redactProse, rewritePrompt, describeDataset } from "@mentat/local";
@@ -69,6 +70,12 @@ export interface RunOptions {
   /** Ask the local model to rewrite comments and prose in the sandbox. */
   readonly rewriteProse?: boolean;
   readonly skipLocalModel?: boolean;
+  /**
+   * Called when the egress scan finds something in the outbound payload.
+   * Return true to send anyway. When absent — or it returns false — the run
+   * is blocked. Gate 1 (local-only artifact references) never reaches this.
+   */
+  readonly reviewEgress?: (report: ScanReport) => Promise<boolean>;
 }
 
 export interface RunOutcome {
@@ -298,6 +305,12 @@ export async function runPipeline(options: RunOptions): Promise<RunOutcome> {
     }
   }
 
+  // Deterministic final pass before any gate. The local rewriter has no vault,
+  // so any real identifier it echoes would survive into the prompt; replace
+  // every known real with its token here. Tokens are inert, so re-sanitizing
+  // text the rewriter already tokenized is a no-op.
+  task = vault.sanitize(task);
+
   // The sanitized prompt is what is sent; record it beside the original so the
   // two can be diffed later. A BoundaryViolation here must land in the report
   // before it propagates, so the run is inspectable after the fact.
@@ -314,14 +327,26 @@ export async function runPipeline(options: RunOptions): Promise<RunOutcome> {
   await writeFile(paths.promptSanitized, task, "utf8");
 
   const promptPreview = scan(task, vault, { redact: true });
+  let egressApproved = false;
   if (!promptPreview.ok) {
-    const blocked = `Prompt still contains ${promptPreview.findings.length} sensitive token(s) after local rewriting. Refusing to send.`;
-    errors.push(blocked);
     report.egress = promptPreview;
-    report.status = "failed";
-    report.finishedAt = new Date().toISOString();
-    await saveReport(paths, report);
-    return { jobId, report, sandboxManifest: manifest, datasets: datasetMocks, cloudReply: null, blocked };
+    // The decision belongs to the user: show exactly what would leak and let
+    // them accept it. Without a reviewer — scripts, the OpenCode plugin —
+    // this stays fail-closed, as it always was.
+    log(`  outbound payload saved for review: ${paths.promptSanitized}`);
+    egressApproved = (await options.reviewEgress?.(promptPreview)) ?? false;
+    if (!egressApproved) {
+      const blocked =
+        `Prompt still contains ${promptPreview.findings.length} finding(s) after local rewriting. ` +
+        `Refusing to send. Review with: mentat inspect ${jobId} — or re-run with --allow-egress to send anyway.`;
+      errors.push(blocked);
+      report.status = "failed";
+      report.finishedAt = new Date().toISOString();
+      await saveReport(paths, report);
+      return { jobId, report, sandboxManifest: manifest, datasets: datasetMocks, cloudReply: null, blocked };
+    }
+    report.egressApproved = true;
+    log(`  ${promptPreview.findings.length} finding(s) reviewed and approved by the user`);
   }
 
   log("delegating to the cloud layer");
@@ -334,6 +359,10 @@ export async function runPipeline(options: RunOptions): Promise<RunOutcome> {
       config: { model: options.config.cloudModel, agent: options.config.cloudAgent, standalone: false },
       logger: log,
       verbose: options.config.verbose,
+      // Approved at the preview above: do not prompt again for the same
+      // findings. Otherwise the delegate gate gets the reviewer as a fallback.
+      allowFindings: egressApproved,
+      reviewEgress: egressApproved ? undefined : options.reviewEgress,
     });
   } catch (err) {
     // `delegate` reports gate failures as values, but anything it does not
@@ -348,6 +377,7 @@ export async function runPipeline(options: RunOptions): Promise<RunOutcome> {
     return { jobId, report, sandboxManifest: manifest, datasets: datasetMocks, cloudReply: null, blocked: message };
   }
   report.egress = delegation.egress;
+  if (delegation.egressApproved) report.egressApproved = true;
 
   if (delegation.blocked) {
     report.status = "failed";

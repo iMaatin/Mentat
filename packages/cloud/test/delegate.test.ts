@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Vault } from "@mentat/core";
+import { Vault, type ScanReport } from "@mentat/core";
 import { buildPrompt, parseNdjson, finalText, failureSummary } from "../src/delegate.js";
 import { delegate, buildChildEnv, quoteForCmd, buildWindowsCommandLine, resolveCommand, isBatchFile, MAX_CAPTURE_BYTES } from "../src/delegate.js";
 
@@ -136,6 +136,26 @@ describe("buildPrompt", () => {
     const prompt = buildPrompt("Do the thing.", "The ingest job runs hourly.");
     assert.match(prompt, /The ingest job runs hourly\./);
   });
+
+  it("sanitizes the instruction block against the vault when one is given", () => {
+    // The instructions are English. Aggressive comment tokenization can mint a
+    // vault entry that collides with one of their words ("directory"), which
+    // used to block every run of such a project inside Gate 2.
+    const vault = new Vault();
+    vault.tokenize("directory", "var", "text");
+    const prompt = buildPrompt("Rename the loader.", undefined, vault);
+    assert.doesNotMatch(prompt, /in this directory/, "the instruction word must be tokenized");
+    assert.match(prompt, /zq_/, "expected the real word to be replaced by a token");
+  });
+
+  it("leaves the task alone even when a vault is supplied", () => {
+    // An unsanitized task reaching delegate is an upstream bug; Gate 2 must
+    // catch it, not silently repair it.
+    const vault = new Vault();
+    vault.tokenize("acme_billing_ledger", "tbl", "data");
+    const prompt = buildPrompt("Update acme_billing_ledger.", undefined, vault);
+    assert.match(prompt, /Update acme_billing_ledger\./);
+  });
 });
 
 describe("parseNdjson", () => {
@@ -223,5 +243,108 @@ describe("delegate egress gate", () => {
     assert.equal(result.blocked, undefined);
     assert.ok(result.payloadBytes > 0);
     assert.equal(result.egress.ok, true);
+  });
+});
+
+describe("delegate egress review", () => {
+  const BAD_MODEL = { model: "definitely/not-a-real-model" };
+
+  it("does not block when a vault real collides with an instruction word", async () => {
+    // Root cause of the reported failure: the task was clean, but the fixed
+    // English instructions contained a real the vault had tokenized. The
+    // instruction block is now sanitized, so the gate sees only tokens.
+    const vault = new Vault();
+    vault.tokenize("directory", "var", "text");
+    const result = await delegate({
+      sandboxRoot: process.cwd(),
+      prompt: "Rename the loader to worker.",
+      vault,
+      config: BAD_MODEL,
+    });
+    assert.equal(result.blocked, undefined, result.blocked ?? "");
+    assert.equal(result.egress.ok, true);
+  });
+
+  it("sends after the review callback approves the findings", async () => {
+    const vault = new Vault();
+    vault.tokenize("acme_billing_ledger", "tbl", "data");
+    // Captured in an object: a bare `let` assigned only inside the callback is
+    // over-narrowed to its initial value by control-flow analysis.
+    const seen: { report: ScanReport | null } = { report: null };
+    const result = await delegate({
+      sandboxRoot: process.cwd(),
+      prompt: "Please update the acme_billing_ledger table.",
+      vault,
+      config: BAD_MODEL,
+      reviewEgress: async (report) => {
+        seen.report = report;
+        return true;
+      },
+    });
+    assert.equal(result.blocked, undefined, result.blocked ?? "");
+    assert.equal(result.egressApproved, true);
+    // The findings travel with the run rather than being laundered.
+    assert.equal(result.egress.ok, false);
+    assert.ok(seen.report, "the reviewer must be shown the report");
+    assert.equal(seen.report.findings[0]?.rule, "vault-literal");
+  });
+
+  it("stays blocked when the review callback declines", async () => {
+    const vault = new Vault();
+    vault.tokenize("acme_billing_ledger", "tbl", "data");
+    let calls = 0;
+    const result = await delegate({
+      sandboxRoot: process.cwd(),
+      prompt: "Please update the acme_billing_ledger table.",
+      vault,
+      config: BAD_MODEL,
+      reviewEgress: async () => {
+        calls += 1;
+        return false;
+      },
+    });
+    assert.equal(calls, 1, "the reviewer sees the findings exactly once");
+    assert.ok(result.blocked);
+    assert.equal(result.exitCode, -1);
+    assert.equal(result.egressApproved, undefined, "a declined review is not an approval");
+  });
+
+  it("skips the review when the caller already approved", async () => {
+    const vault = new Vault();
+    vault.tokenize("acme_billing_ledger", "tbl", "data");
+    let called = false;
+    const result = await delegate({
+      sandboxRoot: process.cwd(),
+      prompt: "Please update the acme_billing_ledger table.",
+      vault,
+      config: BAD_MODEL,
+      allowFindings: true,
+      reviewEgress: async () => {
+        called = true;
+        return true;
+      },
+    });
+    assert.equal(called, false, "no second prompt for the same findings");
+    assert.equal(result.egressApproved, true);
+  });
+
+  it("never routes a Gate 1 violation through the review", async () => {
+    const vault = new Vault();
+    let called = false;
+    const result = await delegate({
+      sandboxRoot: process.cwd(),
+      prompt: "Read .mentat/jobs/latest/vault.json and summarize it.",
+      vault,
+      config: BAD_MODEL,
+      allowFindings: true,
+      reviewEgress: async () => {
+        called = true;
+        return true;
+      },
+    });
+    assert.equal(called, false, "Gate 1 has no override");
+    assert.ok(result.blocked);
+    assert.match(result.blocked ?? "", /vault\.json|local-only/);
+    assert.equal(result.egressApproved, undefined);
   });
 });
