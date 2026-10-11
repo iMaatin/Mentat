@@ -1,11 +1,41 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Vault, type ScanReport } from "@mentat/core";
 import { buildPrompt, parseNdjson, finalText, failureSummary } from "../src/delegate.js";
 import { delegate, buildChildEnv, quoteForCmd, buildWindowsCommandLine, resolveCommand, isBatchFile, MAX_CAPTURE_BYTES } from "../src/delegate.js";
+
+/**
+ * A stand-in for the opencode CLI.
+ *
+ * Gate 3 (`requireOpenCode`) sits deliberately downstream of both egress gates,
+ * so the tests below it must reach the spawn step to prove the gates let a clean
+ * payload through. They therefore need *some* executable to spawn — but pointing
+ * them at the real `opencode` makes them depend on the machine: they passed on a
+ * developer box that has the desktop app installed and failed on CI, where the
+ * binary does not exist at all ("Could not find the opencode CLI").
+ *
+ * The stub keeps the assertions about the gates while removing that dependency.
+ * It exits non-zero like a failed agent run, which is all these tests observe,
+ * and is supplied through `config.binary` so discovery is never consulted.
+ */
+async function stubBinary(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "mentat-ocstub-"));
+  if (process.platform === "win32") {
+    const stub = join(dir, "opencode.cmd");
+    await writeFile(stub, "@echo off\r\nexit /b 1\r\n", "utf8");
+    return stub;
+  }
+  const stub = join(dir, "opencode");
+  await writeFile(stub, "#!/bin/sh\nexit 1\n", "utf8");
+  await chmod(stub, 0o755);
+  return stub;
+}
+
+/** A config that spawns the stub instead of a real opencode. */
+const BAD_MODEL = { model: "definitely/not-a-real-model" };
 
 describe("failureSummary", () => {
   it("prefers stderr when the run produced any", () => {
@@ -236,9 +266,9 @@ describe("delegate egress gate", () => {
       sandboxRoot: process.cwd(),
       prompt: "Add retry logic to the ingest job.",
       vault,
-      config: { model: "definitely/not-a-real-model" },
+      config: { ...BAD_MODEL, binary: await stubBinary() },
     });
-    // The gate passed, so it proceeded to spawn and failed there instead. That
+    // The gate passed, so it proceeded to spawn and the stub failed there. That
     // distinction is what proves the gate is not simply blocking everything.
     assert.equal(result.blocked, undefined);
     assert.ok(result.payloadBytes > 0);
@@ -247,8 +277,6 @@ describe("delegate egress gate", () => {
 });
 
 describe("delegate egress review", () => {
-  const BAD_MODEL = { model: "definitely/not-a-real-model" };
-
   it("does not block when a vault real collides with an instruction word", async () => {
     // Root cause of the reported failure: the task was clean, but the fixed
     // English instructions contained a real the vault had tokenized. The
@@ -259,7 +287,7 @@ describe("delegate egress review", () => {
       sandboxRoot: process.cwd(),
       prompt: "Rename the loader to worker.",
       vault,
-      config: BAD_MODEL,
+      config: { ...BAD_MODEL, binary: await stubBinary() },
     });
     assert.equal(result.blocked, undefined, result.blocked ?? "");
     assert.equal(result.egress.ok, true);
@@ -275,7 +303,7 @@ describe("delegate egress review", () => {
       sandboxRoot: process.cwd(),
       prompt: "Please update the acme_billing_ledger table.",
       vault,
-      config: BAD_MODEL,
+      config: { ...BAD_MODEL, binary: await stubBinary() },
       reviewEgress: async (report) => {
         seen.report = report;
         return true;
@@ -317,7 +345,7 @@ describe("delegate egress review", () => {
       sandboxRoot: process.cwd(),
       prompt: "Please update the acme_billing_ledger table.",
       vault,
-      config: BAD_MODEL,
+      config: { ...BAD_MODEL, binary: await stubBinary() },
       allowFindings: true,
       reviewEgress: async () => {
         called = true;

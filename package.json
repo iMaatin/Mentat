@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc --build packages/core packages/local packages/cloud packages/cli packages/oc-plugin",
     "clean": "tsc --build --clean packages/core packages/local packages/cloud packages/cli packages/oc-plugin",
-    "test": "npm run build && node --test \"packages/*/dist/test/**/*.test.js\"",
+    "test": "npm run build && node scripts/run-tests.mjs",
     "typecheck": "tsc --build packages/core packages/local packages/cloud packages/cli packages/oc-plugin --dry"
   },
   "devDependencies": {
