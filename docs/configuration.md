@@ -1,8 +1,5 @@
 # Configuration reference
 
-> Every knob in one place. For *why* a default is what it is, see the
-> [architecture](architecture.md) or the [threat model](threat-model.md).
-
 Config is JSONC (comments allowed) at `.mentat/config.json`, merged over
 built-in defaults. `~/.config/mentat/config.json` is consulted when no
 project-level file exists. Secrets are never stored in config: the cloud layer
@@ -11,9 +8,9 @@ needs no credential at all.
 
 ```jsonc
 {
-  "cloudModel": "anthropic/claude-sonnet-4-5",
+  "cloudModel": "anthropic/claude-opus-5-5",
   "cloudAgent": "build",
-  "localModel": "qwen3-30b-a3b",
+  "localModel": "qwen3.8-27b",
   "localBaseUrl": "http://127.0.0.1:1234/v1",
   "mockRows": 200,
   "seed": 20260101,
@@ -30,9 +27,9 @@ explaining each key.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `cloudModel` | string | `anthropic/claude-sonnet-4-5` | Any model reference opencode accepts, e.g. `openrouter/…`. Override per run with `--model`. |
+| `cloudModel` | string | `anthropic/claude-opus-5-5` | Any model reference opencode accepts, e.g. `openrouter/…`. Override per run with `--model`. |
 | `cloudAgent` | string | `build` | opencode agent. `build` allows edits; `plan` does not. |
-| `localModel` | string | `qwen3-30b-a3b` | Must match a model loaded in LM Studio. Override with `--local` or `MENTAT_LOCAL_MODEL`. |
+| `localModel` | string | `qwen3.8-27b` | Must match a model loaded in LM Studio. Override with `--local` or `MENTAT_LOCAL_MODEL`. |
 | `localBaseUrl` | string | `http://127.0.0.1:1234/v1` | Must be loopback. See the env section for the waiver. |
 | `mockRows` | number | `200` | Synthetic rows per mocked table. Small on purpose: shape matters, size does not. Override with `--rows`. |
 | `seed` | number | `20260101` | Mocks are seeded; the same input and seed always produce the same output. |
