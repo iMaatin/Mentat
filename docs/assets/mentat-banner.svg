@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" width="1280" height="360" role="img" aria-label="Mentat — a two-layer coding agent that keeps your code on your machine">
+  <title>Mentat — a two-layer coding agent that keeps your code on your machine</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#101a2c"/>
+    </linearGradient>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3fb950"/>
+      <stop offset="1" stop-color="#39c5cf"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#39c5cf" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#39c5cf" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#1b2536" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="360" fill="url(#bg)"/>
+  <rect width="1280" height="360" fill="url(#grid)" opacity="0.55"/>
+  <ellipse cx="1010" cy="120" rx="380" ry="230" fill="url(#glow)"/>
+
+  <rect x="0" y="0" width="9" height="360" fill="url(#wordmark)"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace">
+    <text x="76" y="158" font-size="86" font-weight="700" fill="url(#wordmark)" letter-spacing="1">mentat</text>
+    <text x="80" y="212" font-size="27" fill="#e6edf3" opacity="0.95">a two-layer coding agent</text>
+    <text x="80" y="252" font-size="22" fill="#8b949e">your code and data never leave your machine</text>
+
+    <g transform="translate(120,286)">
+      <rect x="0" y="0" width="188" height="38" rx="9" fill="#132033" stroke="#243043" stroke-width="1.4"/>
+      <text x="16" y="25" font-size="16" fill="#3fb950">layer 1 · local</text>
+      <rect x="206" y="0" width="188" height="38" rx="9" fill="#132033" stroke="#243043" stroke-width="1.4"/>
+      <text x="222" y="25" font-size="16" fill="#39c5cf">layer 2 · cloud</text>
+      <rect x="412" y="0" width="188" height="38" rx="9" fill="#132033" stroke="#243043" stroke-width="1.4"/>
+      <text x="428" y="25" font-size="16" fill="#8b949e">egress gate</text>
+    </g>
+  </g>
+
+  <!-- sandbox motif -->
+  <g transform="translate(800,88)">
+    <rect x="0" y="0" width="392" height="184" rx="14" fill="#0e1727" stroke="#243043" stroke-width="1.5"/>
+    <rect x="0" y="0" width="392" height="38" rx="14" fill="#132033"/>
+    <rect x="0" y="24" width="392" height="14" fill="#132033"/>
+    <circle cx="26" cy="19" r="5" fill="#f85149"/>
+    <circle cx="46" cy="19" r="5" fill="#d29922"/>
+    <circle cx="66" cy="19" r="5" fill="#3fb950"/>
+    <text x="140" y="24" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="13" fill="#8b949e">sandbox — synthetic mirror</text>
+    <text x="24" y="86" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="21" fill="#39c5cf">zq_fn_fn_001(rows)</text>
+    <text x="24" y="120" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="21" fill="#3fb950">data/zq_tbl_tbl_001.csv</text>
+    <text x="24" y="154" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="15" fill="#8b949e">// real names restored locally</text>
+  </g>
+</svg>

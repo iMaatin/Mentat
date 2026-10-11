@@ -1,6 +1,6 @@
 # Architecture
 
-Mentat is four stages, each with an explicit boundary. The ordering is the
+Mentat is four stages, each with an explicit boundary. The ordering **is** the
 security property: any stage that produces something outbound runs its egress
 check immediately before the network boundary, not once at the start.
 
@@ -16,6 +16,10 @@ check immediately before the network boundary, not once at the start.
        ▼                 ▼                  ▼                 ▼
    local only        local only        network boundary    local only
 ```
+
+> The [threat model](threat-model.md) states what is assumed and what can still
+> leak; this document is the *how*. The [configuration reference](configuration.md)
+> covers every knob.
 
 ## Stage 1 — inventory
 

@@ -1,5 +1,9 @@
 # Threat model
 
+> This document states *what is assumed* and *what can still leak*. For the
+> mechanism behind each boundary, see [architecture.md](architecture.md); for
+> every tunable, see [configuration.md](configuration.md).
+
 ## Trust boundaries
 
 Mentat assumes exactly one untrusted party: **the cloud model provider** (and

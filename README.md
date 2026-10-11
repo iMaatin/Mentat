@@ -4,7 +4,18 @@
 [![node](https://img.shields.io/badge/node-%3E%3D20.11-brightgreen)](https://nodejs.org)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-A two-layer coding agent. Your code and data never leave your machine.
+<!-- ───────────────────────────────────────────────────────────────────────────
+     HEADER IMAGE
+     This banner is docs/assets/mentat-banner.svg (a hand-authored SVG). To use
+     your own, drop a PNG/JPG/GIF/animated-SVG in its place and keep the same
+     <img> line below — the src path is the only thing you need to change. Aim
+     for a ~1280×360 banner (32:9).
+     ─────────────────────────────────────────────────────────────────────────── -->
+<p align="center">
+  <img src="docs/assets/mentat-banner.svg" alt="Mentat — a two-layer coding agent that keeps your code on your machine" width="760">
+</p>
+
+<p align="center"><strong>A two-layer coding agent. Your code and data never leave your machine.</strong></p>
 
 Mentat runs a local model first, which understands your request and your
 repository, then builds a **synthetic mirror** of your project and hands *that* to
@@ -14,27 +25,36 @@ maps the result back onto your real files with exact token substitution.
 The cloud model never sees your repository. Not a redacted version of it, not a
 summary of it — a different codebase with the same shape.
 
-```
-  you        ┌───────────────────────────── local, never networked ─────────┐
-  ──────►    │  layer 1: LM Studio                                        │
-  request    │    · understand the request                                │
-             │    · extract your domain vocabulary                         │
-             │    · profile every dataset                                  │
-             │    · mint synthetic rows                                    │
-             └───────────────────────────────┬─────────────────────────────┘
-                                             │  vault (real → token)
-                                             ▼
-                                  sandbox (outside your repo)
-                                  zq_fn_fn_001, data/zq_tbl_tbl_001.csv
-                                             │
-  ┌──────────────────────────────────────────┴──────────────►  cloud
-  │  layer 2: opencode run, headless, against the sandbox only │
-  │  ─────────────────── egress gate ──────────────────────────│
-  └──────────────────────────────────────────────┬───────────────┘
-                                             │  diff
-                                             ▼
-             layer 3: restore tokens  ──►  your real repository
-```
+What does Mentat mean? In Frank Herbert's Dune, **Mentats** are humans trained to perform extraordinary logical reasoning, computation, and strategic analysis, serving as human computers in a society that bans thinking machines.
+
+> **New here?** Read [Why a sandbox](#why-a-sandbox-and-not-a-sanitized-prompt),
+> then jump to [Install](#install). Deeper detail lives in
+> [`docs/`](#documentation): [architecture](docs/architecture.md),
+> [threat model](docs/threat-model.md), and the
+> [configuration reference](docs/configuration.md).
+
+<p align="center">
+  <img src="docs/assets/mentat-flow.svg" alt="The Mentat pipeline: your request runs through a local model that builds a sandboxed synthetic mirror; an egress gate guards the boundary; a headless cloud model edits only the mirror; the diff is restored and applied to your real repository." width="680">
+</p>
+
+Two **layers** — layer 1 (local) and layer 2 (cloud) — across four **stages**:
+inventory, sandbox, delegate, adapt. The [architecture doc](docs/architecture.md)
+walks each stage.
+
+## Contents
+
+1. [Why a sandbox, and not a sanitized prompt](#why-a-sandbox-and-not-a-sanitized-prompt)
+2. [Install](#install)
+3. [Commands](#commands)
+4. [Configuration](#configuration) — keys and environment variables
+5. [How the mocks are built](#how-the-mocks-are-built)
+6. [What the cloud model receives](#what-the-cloud-model-receives)
+7. [The egress gate](#the-egress-gate) — including [reviewing a finding](#reviewing-an-egress-finding)
+8. [What leaves the machine](#what-leaves-the-machine-threat-model)
+9. [Layer 1 refuses to be remote](#layer-1-refuses-to-be-remote)
+10. [Layout](#layout) · [OpenCode plugin](#opencode-plugin)
+11. [Troubleshooting](#troubleshooting) · [Known limits](#known-limits)
+12. [Development](#development) · [Documentation](#documentation) · [License](#license)
 
 ## Why a sandbox, and not a sanitized prompt
 
@@ -73,7 +93,8 @@ mentat doctor    # checks LM Studio, the opencode binary, and dataset formats
 mentat ask "add retry with backoff to the ingest job"
 ```
 
-`npx mentat` works the same way once the package is published.
+> `mentat` is available once the package is published; until then, use
+> `npm link` (above) or call `node packages/cli/dist/src/main.js` directly.
 
 ## Commands
 
@@ -96,13 +117,15 @@ without an interactive prompt — see [The egress gate](#the-egress-gate)).
 ## Configuration
 
 `.mentat/config.json` (JSONC — comments allowed). Everything has a working
-default; you only ever override what differs on your machine.
+default; you only ever override what differs on your machine. The
+[configuration reference](docs/configuration.md) has every key and environment
+variable with defaults.
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `cloudModel` | `anthropic/claude-sonnet-4-5` | opencode model for layer 2, e.g. `anthropic/claude-sonnet-4-5`. |
+| `cloudModel` | `anthropic/claude-opus-5-5` | opencode model for layer 2, e.g. `anthropic/claude-opus-5-5`. |
 | `cloudAgent` | `build` | opencode agent. `build` allows edits; `plan` does not. |
-| `localModel` | `qwen3-30b-a3b` | Model name as loaded in LM Studio. |
+| `localModel` | `qwen3.8-27b` | Model name as loaded in LM Studio. |
 | `localBaseUrl` | `http://127.0.0.1:1234/v1` | LM Studio endpoint. **Must be loopback.** |
 | `mockRows` | `200` | Synthetic rows generated per mocked dataset. |
 | `seed` | `20260101` | Seed for reproducible mocks. Same input, same mock. |
@@ -220,24 +243,23 @@ not protect it; omission is the only treatment that does.
 
 ## The egress gate
 
-Three checks run in order, and the third one is the only thing standing between
-a payload and the network:
+Two checks run in order, immediately before the network boundary. Only after
+both pass is a process spawned.
 
-1. `assertNotExfiltrated` — the payload must not reference `.mentat/`,
-   `vault.json`, `prompt.txt`, or a `sandbox/` path. Patterns are anchored to
-   path starts, so a repository that happens to keep a real `sandbox/`
-   directory is not blocked mid-word.
-2. `assertClean` — every vault literal plus ~20 structural rules (credentials,
-   private addresses, internal hosts, live emails, cards validated by Luhn).
-3. Only then is a process spawned.
+1. **Gate 1 — `assertNotExfiltrated`.** The payload must not reference
+   `.mentat/`, `vault.json`, `prompt.txt`, or a `sandbox/` path. Patterns are
+   anchored to path starts, so a repository that happens to keep a real
+   `sandbox/` directory is not blocked mid-word. **This gate is never
+   overridable.**
+2. **Gate 2 — `assertClean`.** Every vault literal, plus ~20 structural rules
+   (credentials, private addresses, internal hosts, live emails, cards validated
+   by Luhn). A finding normally aborts the run — with one human-approved
+   exception, described [below](#reviewing-an-egress-finding).
 
 Before either gate, the rewritten prompt gets one **deterministic
 `vault.sanitize` pass**. The local rewriter has no vault, so a real identifier it
 echoed back would otherwise survive into the payload and trip Gate 2; replacing
 every known real with its token here is what makes the common case pass cleanly.
-
-Both gates **fail closed**. A finding aborts the run; it is never logged and
-passed along. Gate 1 (local-only artifact references) is never overridable.
 
 ### Reviewing an egress finding
 
@@ -254,17 +276,17 @@ exactly what it saw — rule, severity, count, and a masked excerpt — and asks
   Send anyway? [y/N]
 ```
 
-- Interactive runs prompt `[y/N]`. Non-interactive runs (scripts, the plugin)
-  stay fail-closed unless `--allow-egress` is passed.
-- Approving is **not** laundering: the findings are kept, and `report.json`
-  records `egressApproved: true` beside them, so the decision is auditable. If
-  you judge only a handful of tokens leak and the risk is acceptable, this is
+- **Interactive runs** prompt `[y/N]`. Non-interactive runs (scripts, the
+  plugin) stay fail-closed unless `--allow-egress` is passed.
+- **Approving is not laundering.** The findings are kept, and `report.json`
+  records `egressApproved: true` beside them, so the decision stays auditable.
+  If you judge only a handful of tokens leak and the risk is acceptable, this is
   the way to proceed to layer 2.
-- Gate 1 still cannot be approved around. A reference to `vault.json` or the job
-  directory is always a bug, never a judgement call.
+- **Gate 1 still cannot be approved around.** A reference to `vault.json` or the
+  job directory is always a bug, never a judgement call.
 
-Guard runs in both directions: the CLI gates the prompt, and the OpenCode plugin
-gates every outbound request in a plain session so that opening `opencode`
+The guard runs in both directions: the CLI gates the prompt, and the OpenCode
+plugin gates every outbound request in a plain session — so opening `opencode`
 directly in a Mentat project cannot quietly ship your files either.
 
 ## What leaves the machine (threat model)
@@ -291,7 +313,9 @@ What the cloud child **does not** inherit:
 
 What the cloud provider itself sees — your prompt text and the mirror — is
 covered by your agreement with that provider. Mentat's job is to make sure that
-is *all* they ever see.
+is *all* they ever see. The [threat model](docs/threat-model.md) goes further:
+trust boundaries, the full environment allowlist, and residual risks stated
+plainly.
 
 ## Layer 1 refuses to be remote
 
@@ -420,6 +444,14 @@ task left raw for Gate 2, the review callback's approve/decline/`allowFindings`
 paths, Gate 1 never routed through review, and a stage-3 regression test proving
 a known vault literal in the request is tokenized before the outbound scan.
 
+## Documentation
+
+| Doc | What's in it |
+| --- | --- |
+| [architecture.md](docs/architecture.md) | The four stages (inventory → sandbox → delegate → adapt), what the sandbox does to each file kind, and failure semantics. |
+| [threat-model.md](docs/threat-model.md) | Trust boundaries, the cloud child's environment allowlist, the egress gate, and residual risks stated plainly. |
+| [configuration.md](docs/configuration.md) | Every config key and environment variable, with defaults, plus where artifacts live. |
+
 ## License
 
-[MIT](LICENSE) © iMatin
+[MIT](LICENSE) © iMaatin

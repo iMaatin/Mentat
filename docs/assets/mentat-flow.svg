@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 856" width="920" height="856" role="img" aria-label="Mentat pipeline: your request runs through a local model that builds a sandboxed synthetic mirror; an egress gate guards the boundary; a headless cloud model edits only the mirror; the diff is restored and applied to your real repository.">
+  <title>The Mentat pipeline</title>
+  <defs>
+    <linearGradient id="fbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#101a2c"/>
+    </linearGradient>
+    <radialGradient id="fglow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#39c5cf" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#39c5cf" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="fgrid" width="30" height="30" patternUnits="userSpaceOnUse">
+      <path d="M30 0H0V30" fill="none" stroke="#1b2536" stroke-width="1"/>
+    </pattern>
+    <marker id="farrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#7d8590"/>
+    </marker>
+  </defs>
+
+  <rect width="920" height="856" fill="url(#fbg)"/>
+  <rect width="920" height="856" fill="url(#fgrid)" opacity="0.5"/>
+  <ellipse cx="770" cy="470" rx="360" ry="360" fill="url(#fglow)"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace">
+
+    <!-- 1. you -->
+    <rect x="345" y="34" width="230" height="46" rx="23" fill="#132033" stroke="#2ea043" stroke-width="1.5"/>
+    <text x="460" y="63" font-size="19" fill="#e6edf3" text-anchor="middle">you  →  request</text>
+
+    <line x1="460" y1="80" x2="460" y2="106" stroke="#7d8590" stroke-width="2" marker-end="url(#farrow)"/>
+
+    <!-- STAGE 1 · local zone -->
+    <rect x="140" y="108" width="640" height="228" rx="16" fill="none" stroke="#238636" stroke-width="1.6" stroke-dasharray="7 6"/>
+    <rect x="158" y="122" width="118" height="24" rx="12" fill="#0f2a16" stroke="#238636" stroke-width="1"/>
+    <text x="217" y="139" font-size="13" fill="#3fb950" text-anchor="middle">1 · inventory</text>
+    <text x="762" y="139" font-size="13" fill="#8b949e" text-anchor="end">local · never networked</text>
+
+    <rect x="170" y="158" width="580" height="162" rx="12" fill="#0e1727" stroke="#243043" stroke-width="1.4"/>
+    <text x="192" y="188" font-size="20" fill="#3fb950">layer 1 · LM Studio</text>
+    <g font-size="15" fill="#adbac7">
+      <text x="196" y="220">· understand the request</text>
+      <text x="196" y="250">· extract your domain vocabulary</text>
+      <text x="196" y="280">· profile every dataset</text>
+      <text x="196" y="310">· mint synthetic rows</text>
+    </g>
+
+    <!-- vault arrow -->
+    <line x1="460" y1="336" x2="460" y2="366" stroke="#7d8590" stroke-width="2" marker-end="url(#farrow)"/>
+    <rect x="470" y="340" width="188" height="22" rx="11" fill="#0e1727" stroke="#243043" stroke-width="1"/>
+    <text x="564" y="356" font-size="13" fill="#39c5cf" text-anchor="middle">vault (real → token)</text>
+
+    <!-- STAGE 2 · sandbox -->
+    <rect x="158" y="372" width="118" height="24" rx="12" fill="#0f2a16" stroke="#238636" stroke-width="1"/>
+    <text x="217" y="389" font-size="13" fill="#3fb950" text-anchor="middle">2 · sandbox</text>
+    <rect x="170" y="368" width="580" height="92" rx="12" fill="#0e1727" stroke="#243043" stroke-width="1.4"/>
+    <text x="192" y="404" font-size="20" fill="#e6edf3">sandbox · outside your repo</text>
+    <text x="192" y="434" font-size="15" fill="#39c5cf">zq_fn_fn_001 · data/zq_tbl_tbl_001.csv</text>
+
+    <line x1="460" y1="460" x2="460" y2="490" stroke="#7d8590" stroke-width="2" marker-end="url(#farrow)"/>
+
+    <!-- EGRESS GATE -->
+    <rect x="150" y="492" width="620" height="52" rx="12" fill="#2a2210" stroke="#d29922" stroke-width="1.6"/>
+    <path d="M186 508 l10 -2 4 9 -4 9 -10 -2 -3 -7 z" fill="#d29922"/>
+    <text x="212" y="517" font-size="17" fill="#e3b341">EGRESS GATE</text>
+    <text x="212" y="536" font-size="13" fill="#c9a227">assertNotExfiltrated → assertClean · fail closed</text>
+
+    <line x1="460" y1="544" x2="460" y2="574" stroke="#7d8590" stroke-width="2" marker-end="url(#farrow)"/>
+
+    <!-- STAGE 3 · cloud zone -->
+    <rect x="140" y="576" width="640" height="126" rx="16" fill="none" stroke="#8c2f39" stroke-width="1.6" stroke-dasharray="7 6"/>
+    <rect x="158" y="590" width="118" height="24" rx="12" fill="#33161b" stroke="#8c2f39" stroke-width="1"/>
+    <text x="217" y="607" font-size="13" fill="#f85149" text-anchor="middle">3 · delegate</text>
+    <text x="762" y="607" font-size="13" fill="#8b949e" text-anchor="end">cloud provider · untrusted</text>
+
+    <rect x="170" y="622" width="580" height="66" rx="12" fill="#0e1727" stroke="#243043" stroke-width="1.4"/>
+    <text x="192" y="650" font-size="20" fill="#39c5cf">layer 2 · opencode run (headless)</text>
+    <text x="192" y="676" font-size="15" fill="#adbac7">reads the sandbox only · edits the mirror</text>
+
+    <!-- diff arrow -->
+    <line x1="460" y1="702" x2="460" y2="732" stroke="#7d8590" stroke-width="2" marker-end="url(#farrow)"/>
+    <rect x="470" y="706" width="176" height="22" rx="11" fill="#0e1727" stroke="#243043" stroke-width="1"/>
+    <text x="558" y="722" font-size="13" fill="#39c5cf" text-anchor="middle">diff (tokens intact)</text>
+
+    <!-- STAGE 4 · local zone -->
+    <rect x="140" y="736" width="640" height="96" rx="16" fill="none" stroke="#238636" stroke-width="1.6" stroke-dasharray="7 6"/>
+    <rect x="158" y="750" width="118" height="24" rx="12" fill="#0f2a16" stroke="#238636" stroke-width="1"/>
+    <text x="217" y="767" font-size="13" fill="#3fb950" text-anchor="middle">4 · adapt</text>
+    <text x="762" y="767" font-size="13" fill="#8b949e" text-anchor="end">local · never networked</text>
+
+    <rect x="170" y="784" width="580" height="40" rx="12" fill="#0e1727" stroke="#243043" stroke-width="1.4"/>
+    <text x="192" y="810" font-size="19" fill="#e6edf3">layer 3 · restore tokens  →  your real repository</text>
+
+  </g>
+</svg>

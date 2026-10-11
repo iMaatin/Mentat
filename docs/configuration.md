@@ -1,5 +1,8 @@
 # Configuration reference
 
+> Every knob in one place. For *why* a default is what it is, see the
+> [architecture](architecture.md) or the [threat model](threat-model.md).
+
 Config is JSONC (comments allowed) at `.mentat/config.json`, merged over
 built-in defaults. `~/.config/mentat/config.json` is consulted when no
 project-level file exists. Secrets are never stored in config: the cloud layer
